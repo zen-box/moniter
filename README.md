@@ -50,4 +50,4 @@ Linux 使用 musl 静态链接，Windows 使用 MSVC。包内仅含 Agent、READ
 
 主控 `main` 根据 `server/agent-version.txt` 从已发布的 Agent Release 获取三个二进制；主控更新不会重新构建 Agent。Agent 没有变动时不必发新版本。首次部署先发布本分支的 `agent-v0.1.0`，成功后再发布 `main` 的 `v0.1.0`。
 
-推送本分支会运行 `test-agent.yml` 的 Linux amd64、Linux arm64、Windows 测试和构建检查，不会自动发布 Release。
+普通代码推送与 PR 不触发构建。只有推送 `agent-v*` 标签，才会执行三平台测试、构建和 Release 发布。
