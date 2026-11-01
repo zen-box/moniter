@@ -25,8 +25,10 @@ TARGETS = {
 
 
 def version(component, tag):
+    if component != "server":
+        raise ValueError("Agent source and builds are maintained on the agent branch")
     current = tomllib.loads((ROOT / component / "Cargo.toml").read_text(encoding="utf-8"))["package"]["version"]
-    prefix = "agent-v" if component == "agent" else "v"
+    prefix = "v"
     if not re.fullmatch(r"(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)", current) or tag != prefix + current:
         raise ValueError(f"Expected tag {prefix}{current}, received {tag!r}")
     return current
@@ -174,12 +176,12 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
     validate = commands.add_parser("validate")
-    validate.add_argument("component", choices=("server", "agent"))
+    validate.add_argument("component", choices=("server",))
     validate.add_argument("tag")
     fetch = commands.add_parser("fetch-agents")
     fetch.add_argument("--output", type=Path, default=ROOT / "release-output/agents")
     build = commands.add_parser("package")
-    build.add_argument("component", choices=("server", "agent"))
+    build.add_argument("component", choices=("server",))
     build.add_argument("tag")
     build.add_argument("platform", choices=TARGETS)
     build.add_argument("--binary", type=Path, required=True)

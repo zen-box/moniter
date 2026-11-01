@@ -6,16 +6,16 @@ Rust 主控、轻量 Agent 和 React / HeroUI 控制台。SQLite 保存节点、
 
 首版为 **0.1.0**，官方仓库为 `zen-box/moniter`。后台「网站设置 → 版本更新」显示当前版本、最新正式版和上次检查时间，可手动检查。主控启动后异步检查，此后每 6 小时检查 GitHub Releases；有新版本时后台顶栏出现入口。检查失败保留上次成功结果，60 秒内的重复检查合并。尚未发布正式版时显示「尚未发布正式版」。仅提示更新，不自动覆盖或重启程序。
 
-主控与 Agent 在同一 `main` 分支维护，**通过不同标签独立构建、独立发布**：
+主控与 Agent **分别维护在两个分支，独立构建、独立发布**：`main` 仅含主控与前端源码，`agent` 仅含 Agent 源码。两者的 Cargo 工作区、锁文件和构建工作流分开维护。
 
-| 标签 | 工作流 | 发布产物 |
-| --- | --- | --- |
-| `v0.1.0` | `release-server.yml` | 主控 Linux amd64、Linux arm64、Windows amd64，各自包含 React 前端、地图、国旗与三平台 Agent |
-| `agent-v0.1.0` | `release-agent.yml` | Agent 的同样三种平台安装包 |
+| 分支 | 标签 | 工作流 | 发布产物 |
+| --- | --- | --- | --- |
+| `main` | `v0.1.0` | `release-server.yml` | 主控 Linux amd64、Linux arm64、Windows amd64，各自包含 React 前端、地图、国旗与已发布的三平台 Agent 二进制 |
+| `agent` | `agent-v0.1.0` | `release-agent.yml` | Agent 的同样三种平台安装包 |
 
-Linux 采用原生 amd64 / arm64 runner 和 musl 静态链接，Windows 使用 MSVC。标签必须与对应 `Cargo.toml` 版本一致。仅推送源码不会发布；主控标签不触发 Agent 编译，Agent 标签也不触发主控编译。Agent Release 不标为主控最新版本，更新检测同时过滤 Agent、草稿与预发布标签。
+Linux 采用原生 amd64 / arm64 runner 和 musl 静态链接，Windows 使用 MSVC。标签必须在对应分支创建，并与该分支的 `Cargo.toml` 版本一致。仅推送源码不会发布；更新 `main` 不编译 Agent，主控标签不触发 Agent 编译，Agent 标签也不触发主控编译。Agent Release 不标为主控最新版本，更新检测同时过滤 Agent、草稿与预发布标签。请分别提交和推送两个分支，不要把 `agent` 合并回 `main`。
 
-**首次发布先推 `agent-v0.1.0`，等 Agent Release 成功后再推 `v0.1.0`。** 主控从 `server/agent-version.txt` 指定的既有 Agent Release 下载三平台产物打包；该 Release 缺失则明确失败，不会临时重编或偷偷换版本。以后只改主控时，更新 `server/Cargo.toml` 与前端包版本，再打主控标签；Agent 无变动无需发新版本。Agent 升级时先发布新的 `agent-vX.Y.Z`，再按需修改主控的 `agent-version.txt`。
+**首次发布先在 `agent` 分支推 `agent-v0.1.0`，等 Agent Release 成功后，再在 `main` 分支推 `v0.1.0`。** 主控从 `server/agent-version.txt` 指定的既有 Agent Release 下载三平台产物打包；该 Release 缺失则明确失败，不会临时重编或偷偷换版本。以后只改主控时，更新 `server/Cargo.toml` 与前端包版本，再打主控标签；Agent 无变动无需发新版本。Agent 升级时，在 `agent` 分支发布新的 `agent-vX.Y.Z`，再按需修改 `main` 的 `agent-version.txt`。
 
 发布文件命名为 `moniter-0.1.0-<平台>.tar.gz`（Windows 为 `.zip`），Agent 为 `moniter-agent-0.1.0-<平台>`。主控解压后在该目录运行 `./moniter` 或 `moniter.exe`；Agent 可运行 `./moniter-agent`。包内 `release.json` 记录组件、平台和所含 Agent 版本。发布包采用目录白名单，不含 `data`、日志、凭据或用户上传的主题。
 
@@ -84,7 +84,7 @@ Windows 运行 `target\release\aegis-server.exe`。工作目录应为项目根�
 
 首次启动生成 32 位复杂密码，只在当次标准输出显示，请保存到密码管理器。后续启动不重复显示、不重置自定义密码。首次启动也可指定 `AEGIS_ADMIN_PASSWORD`，至少 12 个字符；已有账号不受这个变量影响。新站没有示例节点。
 
-开发时分别使用 `cargo run -p aegis-server` 和 `cargo run -p aegis-agent -- <参数>`。前端使用 `cd web/app && npm run dev`，代理到 8080 主控。生产使用 Rust 托管构建产物，不要暴露 Vite 开发服务。
+`main` 工作区只有主控，直接 `cargo run` 即可启动。Agent 开发请单独检出 `agent` 分支，使用该分支的构建说明。前端使用 `cd web/app && npm run dev`，代理到 8080 主控。生产使用 Rust 托管构建产物，不要暴露 Vite 开发服务。
 
 ## 接入节点
 
@@ -94,24 +94,15 @@ Windows 运行 `target\release\aegis-server.exe`。工作目录应为项目根�
 curl -fsSL -H 'Authorization: Bearer <节点令牌>' https://monitor.example.com/install.sh | sudo bash
 ```
 
-安装接口校验真实节点令牌。安装脚本依赖 `binaries/aegis-agent-<平台>`，没有对应产物会返回 404。在装好 Rust target 与交叉链接器的构建机上运行：
+安装接口校验真实节点令牌。主控正式包已包含三平台 Agent 二进制。源码部署时，从 `server/agent-version.txt` 固定的 Agent Release 获取它们：
 
 ```bash
-bash scripts/build-agent.sh linux-amd64
-bash scripts/build-agent.sh linux-arm64
-bash scripts/build-agent.sh windows-amd64
+python scripts/release.py fetch-agents --output binaries
 ```
 
-Windows 分发文件故意没有 `.exe` 后缀，安装脚本会以 `.exe` 保存；也可复制本机 release Agent 到 `binaries/aegis-agent-windows-amd64`。
+文件保存为 `binaries/aegis-agent-<平台>`，没有对应产物时安装接口会返回 404。Windows 分发文件故意没有 `.exe` 后缀，安装脚本会以 `.exe` 保存。需要自行编译时，在单独检出的 `agent` 分支运行 `scripts/build-agent.sh`，再将生成的二进制复制到主控的 `binaries` 目录。
 
-本次本地分发目录已生成 Windows x86_64、Linux x86_64 和 Linux ARM64 Agent；Linux 两种产物使用 musl 静态链接。Windows 开发机可使用已安装的 `cargo-zigbuild` 与 Zig 交叉构建：
-
-```powershell
-cargo zigbuild --release --locked -p aegis-agent --target x86_64-unknown-linux-musl --target-dir target-review
-cargo zigbuild --release --locked -p aegis-agent --target aarch64-unknown-linux-musl --target-dir target-review
-```
-
-将对应产物复制为 `binaries/aegis-agent-linux-amd64` 和 `binaries/aegis-agent-linux-arm64`。后台的节点编辑页一直提供 Linux / Windows 安装或重装命令，在线节点也可直接获取，无需重置令牌。Linux 安装先暂存下载、停服务后替换，启动失败恢复旧程序和配置；Windows 安装使用 SYSTEM 开机任务，取消默认执行时限。
+后台的节点编辑页一直提供 Linux / Windows 安装或重装命令，在线节点也可直接获取，无需重置令牌。Linux 安装先暂存下载、停服务后替换，启动失败恢复旧程序和配置；Windows 安装使用 SYSTEM 开机任务，取消默认执行时限。
 
 Agent 使用权限受限的令牌文件和 WebSocket 首帧认证：
 
@@ -221,8 +212,10 @@ npm audit --registry https://registry.npmjs.org
 
 `web/app/scripts/verify-production.cjs` 用临时数据库与回环端口验证主题隔离、登录会话、安装鉴权、通知和后台交互，不改生产数据库；环境变量 `MONITER_TEST_SERVER`、`MONITER_TEST_AGENT` 可指定待测二进制。`verify-round2.cjs` 验证断线、重叠连接、流量校准、目标重置、规则投递、真实 Agent 和约 402 万行历史并发读取。`verify-public.cjs` 连接本地 8080 检查前台，模拟数据仅在浏览器中。浏览器和 Playwright 路径按当前开发机配置。
 
+涉及真实 Agent 的回归，请将 `MONITER_TEST_AGENT` 指向 `agent` 分支编译的程序，或解压 Agent Release 得到的程序；无需把 Agent 源码放回 `main`。
+
 `scripts/test-release.py` 验证发行包白名单和独立版本标签。`scripts/test-install-linux.py` 验证 Linux 安装、更新、坏包拒绝与回滚，模拟 systemd 和下载边界；`scripts/test-install-windows.ps1 -ServerBinary <主控.exe>` 使用真实主控和临时数据库验证安装、更新、登录及数据库回滚，模拟计划任务和 GitHub 下载。GitHub Actions 在安装脚本变更时运行这些检查，Linux 覆盖 amd64 / arm64。开机自启、真实 systemd/计划任务权限和长时间运行仍需在对应目标系统验收。
 
-源码：`server/src`、`agent/src`、`web/app/src`。内置前端构建产物：`web/dist`；地图与国旗：`web/assets`；用户安装的主题：`web/themes`。分发产物：`binaries`。数据库：`data/probe.db`。
+`main` 源码：`server/src`、`web/app/src`；Agent 源码位于 `agent` 分支的 `agent/src`。内置前端构建产物：`web/dist`；地图与国旗：`web/assets`；用户安装的主题：`web/themes`。分发产物：`binaries`。数据库：`data/probe.db`。
 
 修复验收记录见 `.ui-review/fixes-2026-11-01-round2.md`；第一轮历史记录保留在 `.ui-review/fixes-2026-11-01.md`。Windows 安装脚本的 AST 检查不能代替真实开机、重装和长时间运行测试；Linux / ARM 交叉构建成功也不能代替目标系统运行验证。

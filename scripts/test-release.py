@@ -60,12 +60,14 @@ class ReleaseTests(unittest.TestCase):
                     release.fetch_agents(root / "bad-agents")
 
     def test_tags_are_independent_and_must_match_component_version(self):
-        for component, prefix, wrong_prefix in [("server", "v", "agent-v"), ("agent", "agent-v", "v")]:
+        for component, prefix, wrong_prefix in [("server", "v", "agent-v")]:
             current = tomllib.loads((release.ROOT / component / "Cargo.toml").read_text())["package"]["version"]
             self.assertEqual(release.version(component, prefix + current), current)
             for tag in (wrong_prefix + current, prefix + current + "-rc.1"):
                 with self.assertRaises(ValueError):
                     release.version(component, tag)
+        with self.assertRaisesRegex(ValueError, "agent branch"):
+            release.version("agent", "agent-v0.1.0")
 
     def test_wrong_architecture_is_rejected(self):
         with tempfile.TemporaryDirectory() as directory:
