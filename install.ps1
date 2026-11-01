@@ -140,9 +140,24 @@ $root=$PSScriptRoot
     if ($_.Name -notmatch '^(AEGIS_[A-Z0-9_]+|MONITER_UPDATE_CHECK)$') { throw 'Invalid environment key in moniter.json.' }
     [Environment]::SetEnvironmentVariable($_.Name,[string]$_.Value,'Process')
 }
-$process=Start-Process -FilePath (Join-Path $root 'moniter.exe') -WorkingDirectory $root -WindowStyle Hidden -RedirectStandardOutput (Join-Path $root 'logs\server.out.log') -RedirectStandardError (Join-Path $root 'logs\server.err.log') -PassThru
-$process.WaitForExit()
-exit $process.ExitCode
+# Copy raw UTF-8 bytes: Start-Process redirection otherwise depends on the
+# Windows system code page, corrupting first-run credentials on English hosts.
+$info=[Diagnostics.ProcessStartInfo]::new()
+$info.FileName=Join-Path $root 'moniter.exe'; $info.WorkingDirectory=$root
+$info.UseShellExecute=$false; $info.CreateNoWindow=$true
+$info.RedirectStandardOutput=$true; $info.RedirectStandardError=$true
+$process=[Diagnostics.Process]::new(); $process.StartInfo=$info
+$stdout=[IO.FileStream]::new((Join-Path $root 'logs\server.out.log'),[IO.FileMode]::Create,[IO.FileAccess]::Write,[IO.FileShare]::Read,1,$true)
+$stderr=[IO.FileStream]::new((Join-Path $root 'logs\server.err.log'),[IO.FileMode]::Create,[IO.FileAccess]::Write,[IO.FileShare]::Read,1,$true)
+try {
+    $process.Start() | Out-Null
+    $outTask=$process.StandardOutput.BaseStream.CopyToAsync($stdout)
+    $errTask=$process.StandardError.BaseStream.CopyToAsync($stderr)
+    $process.WaitForExit()
+    [Threading.Tasks.Task]::WaitAll([Threading.Tasks.Task[]]@($outTask,$errTask))
+    $exitCode=$process.ExitCode
+} finally { $stdout.Dispose(); $stderr.Dispose(); $process.Dispose() }
+exit $exitCode
 '@ | Set-Content -LiteralPath (Join-Path $Root 'run.ps1') -Encoding UTF8
     $Replaced.Add('run.ps1')
     $TaskAction=New-ScheduledTaskAction -Execute "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe" -Argument "-NoProfile -NonInteractive -ExecutionPolicy Bypass -File `"$Root\run.ps1`"" -WorkingDirectory $Root
@@ -165,7 +180,7 @@ exit $process.ExitCode
     Write-Host "Moniter $Version installed and running. Startup task enabled."
     Write-Host "Public: http://<server-IP>:$ListenPort/"
     Write-Host "Admin:  http://<server-IP>:$ListenPort/admin"
-    if (-not $HadDb) { Get-Content -LiteralPath (Join-Path $Root 'logs\server.out.log') | Where-Object { $_ -match '^\u7ba1\u7406\u5458(\u8d26\u53f7|\u5bc6\u7801):' } }
+    if (-not $HadDb) { Get-Content -LiteralPath (Join-Path $Root 'logs\server.out.log') -Encoding UTF8 | Where-Object { $_ -match '^\u7ba1\u7406\u5458(\u8d26\u53f7|\u5bc6\u7801):' } }
     Write-Host "Update: & '$Root\install.ps1' -Action update"
     Write-Host "Config: $Config"
     Write-Host "Logs: $Root\logs"

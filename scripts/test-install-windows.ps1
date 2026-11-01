@@ -104,7 +104,7 @@ try {
     $settings | Add-Member -NotePropertyName AEGIS_PUBLIC_URL -NotePropertyValue 'https://fixture.example'
     $settings | ConvertTo-Json | Set-Content -LiteralPath "$script:TestRoot\moniter.json" -Encoding UTF8
     # Obtain only this test instance's generated credential; never print it.
-    $credential = Get-Content -LiteralPath "$script:TestRoot\logs\server.out.log" | Where-Object { $_ -match '^\u7ba1\u7406\u5458\u5bc6\u7801:' } | Select-Object -First 1
+    $credential = Get-Content -LiteralPath "$script:TestRoot\logs\server.out.log" -Encoding UTF8 | Where-Object { $_ -match '^\u7ba1\u7406\u5458\u5bc6\u7801:' } | Select-Object -First 1
     $loginBody = @{username='admin';password=($credential -split ': ',2)[1]} | ConvertTo-Json
     $session = Microsoft.PowerShell.Utility\Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:$script:TestPort/api/v1/admin/login" -ContentType 'application/json' -Body $loginBody
     Assert $session.success 'Generated credentials must allow login'
@@ -134,6 +134,10 @@ try {
     Assert $login.success 'Rollback must restore a usable database and restart the old server'
     Assert ((Get-Content -LiteralPath "$script:TestRoot\web\themes\custom\index.html" -Raw) -eq 'custom theme') 'Rollback must preserve themes'
     'Windows installer: real server install, update, credentials, package rejection and startup/database rollback passed (Task Scheduler and GitHub mocked).'
+} catch {
+    $message=$_.Exception.Message.Replace('%','%25').Replace("`r",'%0D').Replace("`n",'%0A')
+    Microsoft.PowerShell.Utility\Write-Host "::error title=Windows installer verification::$message"
+    throw
 } finally {
     Stop-ScheduledTask -TaskName MoniterServer
     foreach ($process in @(Get-Process -ErrorAction SilentlyContinue | Where-Object { $_.Path -eq "$script:TestRoot\moniter.exe" })) { Stop-Process -Id $process.Id -Force; $process.WaitForExit(10000) | Out-Null }
