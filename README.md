@@ -4,7 +4,7 @@ Rust 主控、轻量 Agent 和 React / HeroUI 控制台。SQLite 保存节点、
 
 ## 一键安装与更新
 
-安装器从 `zen-box/moniter` 的最新正式主控 Release 下载完整安装包，自动选择平台、启动服务并配置开机自启。**仓库需要先发布 Agent Release，再发布主控 `v0.1.0`；只有源码、没有正式安装包时，脚本会提示并退出。** 不需要在服务器上安装 Rust 或 Node.js。
+安装器会自动选择平台，从 `zen-box/moniter` 的 GitHub Releases 获取最新正式主控版本，启动服务并配置开机自启。安装和更新均无需填写版本号，也不需要在服务器上安装 Rust 或 Node.js。
 
 ### Linux（amd64 / arm64，systemd）
 
@@ -18,10 +18,10 @@ curl -fsSL https://raw.githubusercontent.com/zen-box/moniter/main/install.sh | s
 sudo moniter update
 ```
 
-首次安装、更新都可指定版本或端口；不指定端口时，更新保留原配置：
+默认端口为 `8080`，更新时保留原端口。需要自定义端口时，例如改用 `9090`：
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/zen-box/moniter/main/install.sh | sudo bash -s -- --version 0.1.0 --port 8080
+curl -fsSL https://raw.githubusercontent.com/zen-box/moniter/main/install.sh | sudo bash -s -- --port 9090
 ```
 
 默认安装在 `/opt/moniter`，配置为 `moniter.env`；用 `sudo systemctl restart moniter` 应用配置，`sudo journalctl -u moniter -f` 查看日志。服务使用专用低权限账户运行。已有 root 会话且没有 sudo 时，将命令末尾的 `sudo bash` 改为 `bash`。系统需要 systemd；缺少 curl 时请先通过系统包管理器安装 curl。脚本会按需安装 Python 3 与 util-linux。
@@ -40,7 +40,7 @@ curl -fsSL https://raw.githubusercontent.com/zen-box/moniter/main/install.sh | s
 & "$env:ProgramData\Moniter\install.ps1" -Action update
 ```
 
-指定版本或端口可在安装命令后加 `-Version 0.1.0 -Port 8080`。默认安装在 `%ProgramData%\Moniter`，配置为 `moniter.json`；`MoniterServer` 计划任务使用 SYSTEM 在开机时运行，无需用户登录，支持长期运行。配置修改后用 `Stop-ScheduledTask -TaskName MoniterServer` 和 `Start-ScheduledTask -TaskName MoniterServer` 重启。日志保存在安装目录的 `logs` 中。
+默认端口为 `8080`，需要自定义端口时可在安装命令后加 `-Port 9090`；更新时保留原端口。默认安装在 `%ProgramData%\Moniter`，配置为 `moniter.json`；`MoniterServer` 计划任务使用 SYSTEM 在开机时运行，无需用户登录，支持长期运行。配置修改后用 `Stop-ScheduledTask -TaskName MoniterServer` 和 `Start-ScheduledTask -TaskName MoniterServer` 重启。日志保存在安装目录的 `logs` 中。
 
 安装成功后访问 `http://服务器IP:8080/` 和 `/admin`。管理员账号、随机密码只在首次初始化时显示，请立即保存。安装器不自动放行防火墙；远程访问需要允许所用端口，正式部署建议使用 HTTPS 反向代理。
 

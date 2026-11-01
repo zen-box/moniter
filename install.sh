@@ -11,7 +11,7 @@ while [[ $# -gt 0 ]]; do
     install|update) ACTION=$1; shift;;
     --version) [[ $# -ge 2 ]] || fail '--version 缺少版本号'; VERSION=${2#v}; shift 2;;
     --port) [[ $# -ge 2 ]] || fail '--port 缺少端口号'; PORT=$2; shift 2;;
-    -h|--help) printf '%s\n' '用法：install.sh [install|update] [--version 0.1.0] [--port 8080]' '再次执行安装命令或 moniter update 即可更新，数据库与已安装主题保留。'; exit 0;;
+    -h|--help) printf '%s\n' '用法：install.sh [install|update] [--port 8080]' '安装和更新默认获取最新正式版，无需填写版本号。' '再次执行安装命令或 moniter update 即可更新，数据库与已安装主题保留。'; exit 0;;
     *) fail "未知参数：$1";;
   esac
 done
