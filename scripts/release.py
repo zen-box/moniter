@@ -150,6 +150,9 @@ def package(component, tag, platform, binary, output, agents):
         shutil.copyfile(ROOT / "README.md", staging / "README.md")
         if component == "server":
             # Explicit allowlist: no databases, custom themes, logs, or credentials.
+            for installer in ("install.sh", "install.ps1"):
+                shutil.copyfile(ROOT / installer, staging / installer)
+            (staging / "install.sh").chmod(0o755)
             for relative in ("web/dist", "web/assets"):
                 shutil.copytree(ROOT / relative, staging / relative)
             if not (staging / "web/dist/index.html").is_file():

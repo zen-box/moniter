@@ -1,0 +1,46 @@
+name: Test installers
+
+on:
+  push:
+    branches: [main]
+    paths: ['install.sh', 'install.ps1', 'scripts/test-install-*', 'scripts/release.py', 'scripts/test-release.py', '.github/workflows/test-installers.yml']
+  pull_request:
+    paths: ['install.sh', 'install.ps1', 'scripts/test-install-*', 'scripts/release.py', 'scripts/test-release.py', '.github/workflows/test-installers.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  linux:
+    strategy:
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-python@v7.1.0
+        with:
+          python-version: '3.12'
+      - name: Syntax and release contracts
+        run: |
+          bash -n install.sh
+          python scripts/test-release.py
+      - name: Installer lifecycle (service and download boundaries mocked)
+        run: python scripts/test-install-linux.py
+
+  windows:
+    runs-on: windows-2025
+    env:
+      MONITER_UPDATE_CHECK: '0'
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - name: Build isolated test server
+        shell: pwsh
+        run: |
+          rustup update stable --no-self-update
+          rustup default stable
+          cargo build --locked -p aegis-server
+      - name: Real server install, update and rollback (Task Scheduler and GitHub mocked)
+        shell: powershell
+        run: ./scripts/test-install-windows.ps1 -ServerBinary target/debug/aegis-server.exe

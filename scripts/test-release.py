@@ -81,6 +81,8 @@ class ReleaseTests(unittest.TestCase):
             root = Path(directory)
             for filename, data in {
                 "README.md": "test",
+                "install.sh": "#!/usr/bin/env bash\n",
+                "install.ps1": "# installer\n",
                 "server/Cargo.toml": '[package]\nversion="0.1.0"',
                 "server/agent-version.txt": "0.1.0",
                 "web/dist/index.html": "built app",
@@ -105,7 +107,7 @@ class ReleaseTests(unittest.TestCase):
             with zipfile.ZipFile(archive) as contents:
                 names = set(contents.namelist())
                 self.assertEqual(names, {
-                    "moniter.exe", "README.md", "release.json", "web/dist/index.html",
+                    "moniter.exe", "README.md", "release.json", "install.sh", "install.ps1", "web/dist/index.html",
                     "web/assets/flags/cn.svg", "web/assets/world-map-paths.svg",
                     *{f"binaries/aegis-agent-{platform}" for platform in release.TARGETS},
                 })

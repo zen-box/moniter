@@ -19,7 +19,51 @@ Linux 采用原生 amd64 / arm64 runner 和 musl 静态链接，Windows 使用 M
 
 发布文件命名为 `moniter-0.1.0-<平台>.tar.gz`（Windows 为 `.zip`），Agent 为 `moniter-agent-0.1.0-<平台>`。主控解压后在该目录运行 `./moniter` 或 `moniter.exe`；Agent 可运行 `./moniter-agent`。包内 `release.json` 记录组件、平台和所含 Agent 版本。发布包采用目录白名单，不含 `data`、日志、凭据或用户上传的主题。
 
-## 构建与启动
+## 一键安装与更新
+
+安装器从 `zen-box/moniter` 的最新正式主控 Release 下载完整安装包，自动选择平台、启动服务并配置开机自启。**仓库需要先发布 Agent Release，再发布主控 `v0.1.0`；只有源码、没有正式安装包时，脚本会提示并退出。** 不需要在服务器上安装 Rust 或 Node.js。
+
+### Linux（amd64 / arm64，systemd）
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/zen-box/moniter/main/install.sh | sudo bash
+```
+
+更新到最新正式版：
+
+```bash
+sudo moniter update
+```
+
+首次安装、更新都可指定版本或端口；不指定端口时，更新保留原配置：
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/zen-box/moniter/main/install.sh | sudo bash -s -- --version 0.1.0 --port 8080
+```
+
+默认安装在 `/opt/moniter`，配置为 `moniter.env`；用 `sudo systemctl restart moniter` 应用配置，`sudo journalctl -u moniter -f` 查看日志。服务使用专用低权限账户运行。已有 root 会话且没有 sudo 时，将命令末尾的 `sudo bash` 改为 `bash`。系统需要 systemd；缺少 curl 时请先通过系统包管理器安装 curl。脚本会按需安装 Python 3 与 util-linux。
+
+### Windows（amd64）
+
+在**管理员 PowerShell** 执行：
+
+```powershell
+& ([scriptblock]::Create((Invoke-WebRequest -UseBasicParsing https://raw.githubusercontent.com/zen-box/moniter/main/install.ps1).Content))
+```
+
+更新到最新正式版：
+
+```powershell
+& "$env:ProgramData\Moniter\install.ps1" -Action update
+```
+
+指定版本或端口可在安装命令后加 `-Version 0.1.0 -Port 8080`。默认安装在 `%ProgramData%\Moniter`，配置为 `moniter.json`；`MoniterServer` 计划任务使用 SYSTEM 在开机时运行，无需用户登录，也没有 72 小时时限。配置修改后用 `Stop-ScheduledTask -TaskName MoniterServer` 和 `Start-ScheduledTask -TaskName MoniterServer` 重启。日志保存在安装目录的 `logs` 中。
+
+安装成功后访问 `http://服务器IP:8080/` 和 `/admin`。管理员账号、随机密码只在首次初始化时显示，请立即保存。安装器不自动放行防火墙；远程访问需要允许所用端口，正式部署建议使用 HTTPS 反向代理。
+
+两种安装方式都先下载、验证完整安装包，再停止旧服务。更新保留数据库、站点配置和第三方主题，并在 `backups` 中备份旧程序与停机后的 SQLite 文件；新版本启动检查失败会恢复旧版本和数据库。备份不自动删除，可在确认升级正常后按需清理。安装器管理安装目录内的 `data/probe.db`；现有源码运行目录或自定义数据库路径请按「备份与升级」手动迁移，不会自动接管。
+
+## 源码构建与启动
 
 需要 Rust 1.88 或以上、Node.js 和 npm。使用锁文件安装：
 
@@ -176,6 +220,8 @@ npm audit --registry https://registry.npmjs.org
 ```
 
 `web/app/scripts/verify-production.cjs` 用临时数据库与回环端口验证主题隔离、登录会话、安装鉴权、通知和后台交互，不改生产数据库；环境变量 `MONITER_TEST_SERVER`、`MONITER_TEST_AGENT` 可指定待测二进制。`verify-round2.cjs` 验证断线、重叠连接、流量校准、目标重置、规则投递、真实 Agent 和约 402 万行历史并发读取。`verify-public.cjs` 连接本地 8080 检查前台，模拟数据仅在浏览器中。浏览器和 Playwright 路径按当前开发机配置。
+
+`scripts/test-release.py` 验证发行包白名单和独立版本标签。`scripts/test-install-linux.py` 验证 Linux 安装、更新、坏包拒绝与回滚，模拟 systemd 和下载边界；`scripts/test-install-windows.ps1 -ServerBinary <主控.exe>` 使用真实主控和临时数据库验证安装、更新、登录及数据库回滚，模拟计划任务和 GitHub 下载。GitHub Actions 在安装脚本变更时运行这些检查，Linux 覆盖 amd64 / arm64。开机自启、真实 systemd/计划任务权限和长时间运行仍需在对应目标系统验收。
 
 源码：`server/src`、`agent/src`、`web/app/src`。内置前端构建产物：`web/dist`；地图与国旗：`web/assets`；用户安装的主题：`web/themes`。分发产物：`binaries`。数据库：`data/probe.db`。
 
