@@ -1,0 +1,31 @@
+# Runtime state and credentials must never be committed.
+/data/
+/binaries/
+/_backup/
+/.ui-review/
+/.workbuddy-ai/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite*
+*.log
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+# Build outputs and local dependencies.
+/target*/
+/release-output/
+/web/dist/
+node_modules/
+*.tsbuildinfo
+__pycache__/
+*.pyc
+# Locally installed third-party themes are runtime content.
+/web/themes/*
+!/web/themes/default/
+# Local review screenshots.
+/*.png
+/.DS_Store
+/Thumbs.db

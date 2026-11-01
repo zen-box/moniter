@@ -1,0 +1,581 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="site-name" content="__SITE_NAME__">
+  <title>__SITE_NAME__ · 服务器状态与网络监控</title>
+
+  <!-- 立即执行的防闪烁内联脚本 (Anti-Flicker): 在浏览器绘制前毫秒级确定浅色/深色模式 -->
+  <script>
+    (function () {
+      document.documentElement.classList.add('page-booting');
+      try {
+        var savedTheme = localStorage.getItem('aegis_theme') || 'system';
+        var theme = savedTheme;
+        if (theme === 'system') {
+          theme = window.matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+        }
+        document.documentElement.setAttribute('data-theme', theme);
+      } catch (e) {
+        document.documentElement.setAttribute('data-theme', 'dark');
+      }
+    })();
+  </script>
+
+  <style>
+    html.page-booting::before,
+    html.data-loading::before {
+      content: "";
+      position: fixed;
+      z-index: 9999;
+      inset: 0 auto auto 0;
+      width: 35%;
+      height: 2px;
+      background: #3b82f6;
+      box-shadow: 0 0 8px rgba(59,130,246,.55);
+      animation: page-load-progress 1s ease-in-out infinite;
+    }
+    @keyframes page-load-progress {
+      from { transform: translateX(-110%); }
+      to { transform: translateX(310vw); }
+    }
+    @media (prefers-reduced-motion: reduce) {
+      html.page-booting::before,
+      html.data-loading::before { animation: none; width: 100%; opacity: .65; }
+    }
+    /* Keep the static HTML shell from painting before the first data render.
+       Otherwise the empty table/placeholders briefly show before app.js mounts. */
+    html.page-booting .header,
+    html.page-booting .container {
+      visibility: hidden;
+    }
+    html.page-booting .loading-indicator {
+      visibility: visible;
+    }
+    html { background-color: #0a0c10; color-scheme: dark; }
+    html[data-theme="light"] { background-color: #f5f6f7; color-scheme: light; }
+    .header { min-height:64px; border-bottom:1px solid #dce1e6; background:#f5f6f7; }
+    .header-inner { max-width:1440px; min-height:64px; margin:0 auto; padding:.85rem 1.5rem; display:flex; align-items:center; justify-content:space-between; }
+    .brand-section { display:flex; align-items:center; gap:.85rem; }
+    .brand-logo { width:36px; height:36px; display:flex; align-items:center; justify-content:center; border-radius:9px; background:#2563eb; color:#fff; flex:none; }
+    .brand-title { display:flex; align-items:center; gap:.5rem; color:#0f172a; font:700 1.15rem -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; white-space:nowrap; }
+    .brand-tag { font-size:.65rem; padding:.1rem .45rem; border:1px solid #3b82f6; border-radius:9999px; color:#2563eb; white-space:nowrap; }
+    .container { max-width:1440px; margin:0 auto; padding:0 1.5rem 3rem; }
+    .summary-grid { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:1rem; margin:1.5rem 0; }
+    .stat-card { min-height:135px; padding:1.15rem; border:1px solid #dce1e6; border-radius:12px; background:#fff; }
+    .table-container { min-height:118px; }
+    html[data-theme="dark"] .header { border-color:#202736; background:#0a0c10; }
+    html[data-theme="dark"] .brand-title { color:#f8fafc; }
+    html[data-theme="dark"] .stat-card { border-color:#202736; background:#12161f; }
+    .header-controls,.toolbar,.toolbar-left,.toolbar-right,.view-toggle { display:flex; align-items:center; }
+    .header-controls { gap:.75rem; }
+    .btn-control { display:inline-flex; align-items:center; justify-content:center; gap:.4rem; height:36px; padding:.45rem .75rem; border:1px solid #dce1e6; border-radius:8px; background:#fff; color:#4b5563; font:500 .825rem -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+    #refreshBtn { width:60px; } #langToggleBtn { width:110px; } #themeToggleBtn { width:150px; }
+    .toolbar { justify-content:space-between; gap:.85rem; min-height:48px; }
+    .toolbar-left,.toolbar-right { gap:.75rem; }
+    .search-input-wrapper { position:relative; width:260px; }
+    .search-input { width:100%; height:36px; padding:.48rem .75rem .48rem 2.2rem; border:1px solid #dce1e6; border-radius:8px; background:#fff; color:#0f172a; font:.85rem -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+    .filter-pill,.view-btn { height:36px; border:1px solid #dce1e6; border-radius:6px; background:#fff; color:#4b5563; font:.75rem -apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; }
+    .filter-pill { min-width:64px; padding:.35rem .65rem; } .filter-pill[data-filter="all"] { min-width:96px; }
+    .view-toggle { padding:2px; border:1px solid #dce1e6; border-radius:8px; background:#fff; } .view-btn { border:0; padding:.35rem .6rem; }
+    html[data-theme="dark"] .btn-control,html[data-theme="dark"] .search-input,html[data-theme="dark"] .filter-pill,html[data-theme="dark"] .view-toggle { background:#12161f; border-color:#202736; color:#94a3b8; }
+  </style>
+
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <div id="loadingIndicator" class="loading-indicator" role="status" aria-live="polite" aria-hidden="false">
+    <span class="loading-spinner" aria-hidden="true"></span>
+    <span data-i18n="syncing">正在同步</span>
+  </div>
+
+  <!-- Top Sticky Navigation -->
+  <header class="header">
+    <div class="header-inner">
+      <div class="brand-section">
+        <div class="brand-logo">
+          <!-- Pulse / Server Icon -->
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <rect width="20" height="8" x="2" y="2" rx="2" ry="2"/>
+            <rect width="20" height="8" x="2" y="14" rx="2" ry="2"/>
+            <line x1="6" x2="6.01" y1="6" y2="6"/>
+            <line x1="6" x2="6.01" y1="18" y2="18"/>
+          </svg>
+        </div>
+        <div class="brand-title">
+          <span data-brand-name>__SITE_NAME__</span>
+        </div>
+      </div>
+
+      <div class="header-controls">
+        <!-- Manual refresh; live data continues through WebSocket/auto refresh. -->
+        <button id="refreshBtn" class="btn-control" title="立即刷新" aria-label="立即刷新">
+          <svg class="refresh-icon" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21 12a9 9 0 0 0-9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/>
+            <path d="M3 3v5h5"/>
+            <path d="M3 12a9 9 0 0 0 9 9 9.75 9.75 0 0 0 6.74-2.74L21 16"/>
+            <path d="M16 21h5v-5"/>
+          </svg>
+          <span class="sr-only" id="refreshTimerText" data-i18n="refresh_now">刷新</span>
+        </button>
+
+        <!-- Language Switcher Dropdown -->
+        <div class="dropdown-wrapper">
+          <button id="langToggleBtn" class="btn-control" aria-label="切换语言">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+              <circle cx="12" cy="12" r="10"/>
+              <path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/>
+              <path d="M2 12h20"/>
+            </svg>
+            <span id="currentLangLabel">中文</span>
+          </button>
+          <div id="langMenu" class="dropdown-menu">
+            <button class="dropdown-item active" data-lang="zh">简体中文 (CN)</button>
+            <button class="dropdown-item" data-lang="en">English (US)</button>
+          </div>
+        </div>
+
+        <!-- Theme Mode Switcher (System / Light / Dark) -->
+        <div class="dropdown-wrapper">
+          <button id="themeToggleBtn" class="btn-control" aria-label="切换主题">
+            <span id="currentThemeIcon">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect width="20" height="14" x="2" y="3" rx="2"/><line x1="8" x2="16" y1="21" y2="21"/><line x1="12" x2="12" y1="17" y2="21"/>
+              </svg>
+            </span>
+            <span id="currentThemeLabel" data-i18n="theme_system">跟随系统</span>
+          </button>
+          <div id="themeMenu" class="dropdown-menu">
+            <button class="dropdown-item active" data-theme-val="system">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <rect width="20" height="14" x="2" y="3" rx="2"/><line x1="8" x2="16" y1="21" y2="21"/><line x1="12" x2="12" y1="17" y2="21"/>
+              </svg>
+              <span data-i18n="theme_system">跟随系统</span>
+            </button>
+            <button class="dropdown-item" data-theme-val="light">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <circle cx="12" cy="12" r="4"/><path d="M12 2v2"/><path d="M12 20v2"/><path d="m4.93 4.93 1.41 1.41"/><path d="m17.66 17.66 1.41 1.41"/><path d="M2 12h2"/><path d="M20 12h2"/><path d="m6.34 17.66-1.41 1.41"/><path d="m19.07 4.93-1.41 1.41"/>
+              </svg>
+              <span data-i18n="theme_light">浅色模式</span>
+            </button>
+            <button class="dropdown-item" data-theme-val="dark">
+              <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                <path d="M12 3a6 6 0 0 0 9 9 9 9 0 1 1-9-9Z"/>
+              </svg>
+              <span data-i18n="theme_dark">深色模式</span>
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <!-- Main Container -->
+  <main class="container">
+    <!-- Summary Stats Bar -->
+    <section class="summary-grid">
+      <!-- Total Nodes -->
+      <div class="stat-card">
+        <div class="stat-header">
+          <span class="stat-label" data-i18n="stat_nodes">服务器节点</span>
+          <span class="stat-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect width="20" height="8" x="2" y="2" rx="2" ry="2"/><rect width="20" height="8" x="2" y="14" rx="2" ry="2"/><line x1="6" x2="6.01" y1="6" y2="6"/><line x1="6" x2="6.01" y1="18" y2="18"/></svg></span>
+        </div>
+        <div class="stat-value">
+          <span id="statOnlineCount">—</span>
+          <span style="font-size: 0.85rem; color: var(--text-muted);">/ <span id="statTotalCount">—</span></span>
+        </div>
+        <div class="stat-sub">
+          <span class="status-dot" style="display:inline-block; margin-right:4px;"></span>
+          <span data-i18n="stat_all_online">所有服务正常运转</span>
+        </div>
+      </div>
+
+      <!-- Monthly Cost -->
+      <div class="stat-card">
+        <div class="stat-header">
+          <span class="stat-label" data-i18n="stat_monthly_cost">月度开销预估</span>
+          <span class="stat-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect width="20" height="14" x="2" y="5" rx="2"/><line x1="2" x2="22" y1="10" y2="10"/></svg></span>
+        </div>
+        <div class="stat-value">
+          <span style="font-size: 1.1rem; color: var(--accent-primary);">$</span>
+          <span id="statMonthlyCost">—</span>
+          <span style="font-size: 0.75rem; color: var(--text-muted); font-weight: normal;">/ <span data-i18n="month">月</span></span>
+        </div>
+        <div class="stat-sub" id="statCostBreakdown">
+          约 ¥172.5 / 包含 6 台 VPS
+        </div>
+      </div>
+
+      <!-- Total Traffic -->
+      <div class="stat-card">
+        <div class="stat-header">
+          <span class="stat-label" data-i18n="stat_traffic_used">累计出站流量</span>
+          <span class="stat-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 20V10"/><path d="M18 20V4"/><path d="M6 20v-4"/></svg></span>
+        </div>
+        <div class="stat-value">
+          <span id="statTrafficUsed">—</span>
+          <span style="font-size: 0.85rem; color: var(--text-muted);">/ <span id="statTrafficTotal">—</span> TB</span>
+        </div>
+        <div class="stat-sub">
+          <span data-i18n="stat_traffic_pct">已使用</span> <span id="statTrafficPercent">—</span>
+        </div>
+      </div>
+
+      <!-- Network Average Latency -->
+      <div class="stat-card">
+        <div class="stat-header">
+          <span class="stat-label" data-i18n="stat_avg_latency">亚太/国内平均延时</span>
+          <span class="stat-icon"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg></span>
+        </div>
+        <div class="stat-value">
+          <span id="statAvgPing">—</span>
+          <span style="font-size: 0.85rem; color: var(--text-muted);">ms</span>
+        </div>
+        <div class="stat-sub">
+          <span data-i18n="latency_scope">来自在线探针</span>
+        </div>
+      </div>
+    </section>
+
+    <nav class="dashboard-tabs" aria-label="工作区">
+      <button class="dashboard-tab active" id="nodesViewBtn" type="button" data-i18n="view_nodes">节点</button>
+      <button class="dashboard-tab" id="mapViewBtn" type="button" data-i18n="view_map">地图</button>
+    </nav>
+
+    <!-- Interactive Vector World Map: retained as a secondary view -->
+    <section id="mapViewPanel" class="world-map-section" style="display:none;">
+      <div class="world-map-header">
+        <div class="world-map-title">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/>
+          </svg>
+          <span data-i18n="map_title">全球节点分布</span>
+          <span class="map-badge" id="mapLitBadge">已点亮 5 个国家/地区</span>
+        </div>
+        <div class="world-map-controls">
+          <button id="toggleMapBtn" class="btn-control" style="padding:0.3rem 0.65rem; font-size:0.75rem;" title="折叠/展开地图">
+            <svg id="toggleMapIcon" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <polyline points="18 15 12 9 6 15"/>
+            </svg>
+            <span id="toggleMapText" data-i18n="map_collapse">收起地图</span>
+          </button>
+        </div>
+      </div>
+      <div id="worldMapBody" class="world-map-canvas-wrapper">
+        <svg id="worldMapSvg" viewBox="0 0 1000 500" class="world-map-svg">
+          <defs>
+            <pattern id="mapGrid" width="20" height="20" patternUnits="userSpaceOnUse">
+              <circle cx="2" cy="2" r="0.75" fill="var(--text-muted)" opacity="0.2"/>
+            </pattern>
+          </defs>
+          <rect width="1000" height="500" fill="url(#mapGrid)" />
+          <g id="worldContinents" class="world-continents"></g>
+          <g id="mapConnections"></g>
+          <g id="mapPins"></g>
+        </svg>
+        <div id="mapTooltip" class="map-tooltip" style="display:none;"></div>
+      </div>
+    </section>
+
+    <section id="nodesViewPanel">
+    <!-- Toolbar: Search, Filters, and View Switcher -->
+    <div class="toolbar">
+      <div class="toolbar-left">
+        <div class="search-input-wrapper">
+          <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <circle cx="11" cy="11" r="8"/><path d="m21 21-4.3-4.3"/>
+          </svg>
+          <input type="text" id="searchInput" class="search-input" placeholder="搜索节点名称、地区或厂商..." data-i18n-ph="search_placeholder">
+        </div>
+
+        <div id="regionFilters" class="region-filters" role="group" aria-label="地区筛选">
+          <button class="filter-pill active" data-filter="all" data-i18n="filter_all">全部地区</button>
+        </div>
+      </div>
+
+      <div class="toolbar-right">
+        <!-- View Toggle (Table or Cards) -->
+        <div class="view-toggle">
+          <button id="viewTableBtn" class="view-btn active" title="表格列表视图 (Beszel 风格)">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <line x1="3" x2="21" y1="6" y2="6"/><line x1="3" x2="21" y1="12" y2="12"/><line x1="3" x2="21" y1="18" y2="18"/>
+            </svg>
+          </button>
+          <button id="viewGridBtn" class="view-btn" title="网格卡片视图">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+              <rect width="7" height="7" x="3" y="3" rx="1"/><rect width="7" height="7" x="14" y="3" rx="1"/><rect width="7" height="7" x="14" y="14" rx="1"/><rect width="7" height="7" x="3" y="14" rx="1"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Table View Section (Beszel Style) -->
+    <div id="tableViewSection" class="table-container">
+      <div class="table-responsive">
+        <table class="probe-table">
+          <thead>
+            <tr>
+              <th data-i18n="th_system">系统名称 / 地区</th>
+              <th data-i18n="th_cpu">CPU 占用</th>
+              <th data-i18n="th_memory">内存占用</th>
+              <th data-i18n="th_disk">磁盘占用</th>
+              <th data-i18n="th_network">实时网速 (上/下)</th>
+              <th data-i18n="th_traffic">流量消耗</th>
+              <th data-i18n="th_billing">周期 & 价格</th>
+              <th data-i18n="th_route">回程线路</th>
+              <th style="text-align: right;" data-i18n="th_action">操作</th>
+            </tr>
+          </thead>
+          <tbody id="tableBody">
+            <!-- Dynamic Injection -->
+          </tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Grid Cards View Section (Alternative) -->
+    <div id="gridViewSection" class="cards-grid" style="display: none;">
+      <!-- Dynamic Injection -->
+    </div>
+
+    <!-- Footer -->
+    </section>
+
+    <footer class="footer">
+      <div>
+        <span data-i18n="footer_brand">__SITE_NAME__ · 开源服务器探针</span> · 
+        <span data-i18n="footer_updated">实时数据每 5 秒刷新</span>
+      </div>
+      <div class="footer-links">
+        <a href="javascript:void(0)" class="footer-link" onclick="openDocsModal()" data-i18n="footer_api_doc">API 接口文档</a>
+        <a href="https://github.com" target="_blank" class="footer-link">GitHub</a>
+      </div>
+    </footer>
+  </main>
+
+  <!-- Server Detail & Latency / Route Modal (Beszel Detailed Panel + Smokeping) -->
+  <div id="detailModal" class="modal-backdrop">
+    <div class="modal-window">
+      <div class="modal-header">
+        <div class="modal-title-wrap">
+          <span id="modalStatusDot" class="status-dot"></span>
+          <div>
+            <div class="modal-title" id="modalServerName">LAX-CN2-GIA-Premium</div>
+            <div class="modal-tags">
+              <span class="card-badge" id="modalProvider">BandwagonHost</span>
+              <span class="card-badge region-badge" id="modalRegion">
+                <img id="modalRegionFlag" class="region-flag" src="/assets/flags/unknown.svg" alt="">
+                <span id="modalRegionLabel">US · Los Angeles</span>
+              </span>
+              <span class="card-badge" id="modalOs">Debian 12</span>
+              <span class="card-badge" id="modalUptime">在线 248 天</span>
+            </div>
+          </div>
+        </div>
+        <button class="btn-close" id="modalCloseBtn" aria-label="关闭窗口">
+          <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+            <line x1="18" x2="6" y1="6" y2="18"/><line x1="6" x2="18" y1="6" y2="18"/>
+          </svg>
+        </button>
+      </div>
+
+      <!-- 系统信息 -->
+      <div class="detail-card">
+        <div class="detail-card-title">
+          <span style="display:flex; align-items:center; gap:0.4rem;">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect width="16" height="16" x="4" y="4" rx="2"/><rect width="6" height="6" x="9" y="9"/><path d="M15 2v2"/><path d="M15 20v2"/><path d="M2 15h2"/><path d="M2 9h2"/><path d="M20 15h2"/><path d="M20 9h2"/><path d="M9 2v2"/><path d="M9 20v2"/></svg>
+            <span data-i18n="detail_system">系统信息</span>
+          </span>
+          <span style="font-size:0.75rem; color:var(--text-muted);" data-i18n="agent_live">Agent 实时上报</span>
+        </div>
+        <div id="sysInfoGrid" style="display:grid; grid-template-columns:repeat(auto-fit, minmax(170px, 1fr)); gap:0.55rem 1.2rem; font-size:0.78rem;"></div>
+      </div>
+
+      <!-- 性能指标趋势 -->
+      <div class="detail-card">
+        <div class="detail-card-title" style="flex-wrap:wrap; gap:0.5rem;">
+          <span style="display:flex; align-items:center; gap:0.4rem;">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><path d="m19 9-5 5-4-4-3 3"/></svg>
+            <span data-i18n="metric_history">性能指标趋势</span>
+          </span>
+          <div class="range-btns" id="metricRangeBtns">
+            <button data-range="live" class="active" data-i18n="range_live">实时</button>
+            <button data-range="1h" data-i18n="range_1h">1 小时</button>
+            <button data-range="4h" data-i18n="range_4h">4 小时</button>
+            <button data-range="1d" data-i18n="range_1d">1 天</button>
+            <button data-range="7d" data-i18n="range_7d">7 天</button>
+            <button data-range="30d" data-i18n="range_30d">30 天</button>
+          <button data-range="365d" data-i18n="range_365d">1 年</button>
+          </div>
+        </div>
+
+        <div class="metric-tabs" id="metricTabs">
+          <button data-metric="cpu" class="active">CPU</button>
+          <button data-metric="mem" data-i18n="metric_memory">内存</button>
+          <button data-metric="disk" data-i18n="metric_disk">磁盘</button>
+          <button data-metric="net" data-i18n="metric_network">网络</button>
+          <button data-metric="conns" data-i18n="metric_connections">连接数</button>
+          <button data-metric="load" data-i18n="metric_load">负载</button>
+          <button data-metric="processes" data-i18n="metric_processes">进程</button>
+        </div>
+
+        <div class="canvas-wrapper metric-canvas-wrapper">
+          <canvas id="metricCanvas"></canvas>
+        </div>
+        <div style="font-size:0.7rem; color:var(--text-muted); margin-top:0.4rem;" id="metricHint">
+          <span data-i18n="metric_hint">实时模式为最近 60 秒的滚动采样，其余区间为数据库聚合值</span>
+        </div>
+      </div>
+
+      <!-- Section: Smokeping Multi-Line Latency Monitor (Inspired by Screenshot 2) -->
+      <div class="chart-container">
+        <div class="chart-header">
+          <div>
+            <div style="font-weight: 600; font-size: 0.95rem;" data-i18n="chart_title">Smokeping 多线延迟监控 (24H)</div>
+            <div style="font-size: 0.75rem; color: var(--text-muted);" data-i18n="chart_sub">三网回程及国际骨干实时往返延时与抖动曲线</div>
+          </div>
+          <div class="chart-legend" id="chartLegend">
+            <!-- Dynamic Legend Items -->
+          </div>
+        </div>
+
+        <div class="canvas-wrapper">
+          <canvas id="pingCanvas"></canvas>
+        </div>
+
+      </div>
+
+      <!-- Section: Details Grid (Billing + Traffic & Bandwidth) -->
+      <div class="detail-grid">
+        <!-- Billing Details -->
+        <div class="detail-card">
+          <div class="detail-card-title">
+            <span style="display:flex; align-items:center; gap:0.4rem;"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect width="20" height="14" x="2" y="5" rx="2"/><line x1="2" x2="22" y1="10" y2="10"/></svg><span data-i18n="card_billing_title">付款周期与费用</span></span>
+            <span class="badge-sm" id="modalAutoRenew">自动续费</span>
+          </div>
+
+          <div style="display:flex; justify-content:space-between; align-items:baseline; margin-bottom:1rem;">
+            <div>
+              <div style="font-size: 1.6rem; font-weight:700; font-family:var(--font-mono); color:var(--text-main);" id="modalBillingPrice">
+                $49.99
+              </div>
+              <div style="font-size:0.75rem; color:var(--text-muted);" id="modalBillingCycle">
+                半年付 · 相当于 $8.33/月
+              </div>
+            </div>
+            <div style="text-align:right;">
+              <div style="font-size:0.75rem; color:var(--text-muted);" data-i18n="billing_due_date">到期时间</div>
+              <div style="font-size:0.9rem; font-weight:600; font-family:var(--font-mono);" id="modalRenewalDate">2026-11-15</div>
+              <div style="font-size:0.75rem; color:var(--status-online);" id="modalRemainingDays">剩余 17 天</div>
+            </div>
+          </div>
+
+          <div class="progress-wrap" style="width: 100%;">
+            <div class="progress-header">
+              <span style="font-size: 0.72rem; color: var(--text-muted);" data-i18n="billing_cycle_progress">当前账期已过</span>
+              <span style="font-size: 0.72rem;" id="modalCycleProgressText">89%</span>
+            </div>
+            <div class="progress-bar-bg">
+              <div id="modalCycleProgressBar" class="progress-bar-fill" style="width: 89%;"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Traffic & Quota -->
+        <div class="detail-card">
+          <div class="detail-card-title">
+            <span style="display:flex; align-items:center; gap:0.4rem;"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M12 2a14.5 14.5 0 0 0 0 20 14.5 14.5 0 0 0 0-20"/><path d="M2 12h20"/></svg><span data-i18n="card_traffic_title">流量配额与实时网速</span></span>
+            <span class="badge-sm" id="modalTrafficType">单向出站计费</span>
+          </div>
+
+          <div class="traffic-overview">
+            <div class="traffic-stats-row">
+              <div class="traffic-amount">
+                <span id="modalTrafficUsed">428 GB</span>
+                <span style="font-size: 0.85rem; color: var(--text-muted); font-weight: normal;">/ <span id="modalTrafficTotal">1000 GB</span></span>
+              </div>
+              <div class="traffic-speed-badges">
+                <span class="speed-badge" title="当前上行速率">
+                  <span style="color:#10b981;">↑</span> <span id="modalSpeedUp">8.82 MB/s</span>
+                </span>
+                <span class="speed-badge" title="当前下行速率">
+                  <span style="color:#3b82f6;">↓</span> <span id="modalSpeedDown">1.45 MB/s</span>
+                </span>
+              </div>
+            </div>
+
+            <div class="progress-wrap" style="width: 100%;">
+              <div class="progress-header">
+                <span style="font-size: 0.72rem; color: var(--text-muted);" data-i18n="traffic_used_percent">已消耗比例</span>
+                <span style="font-size: 0.72rem;" id="modalTrafficPct">42.8%</span>
+              </div>
+              <div class="progress-bar-bg">
+                <div id="modalTrafficBar" class="progress-bar-fill" style="width: 42.8%;"></div>
+              </div>
+            </div>
+
+            <div style="font-size: 0.72rem; color: var(--text-muted); display:flex; justify-content:space-between; margin-top:0.25rem;">
+              <span><span data-i18n="traffic_reset_day">流量重置日</span>: <strong id="modalResetDay">每月 15 日</strong></span>
+              <span id="modalTrafficRemaining">剩余 572 GB 可用</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Section: Return Route (Traceback) Detailed Grid -->
+      <div class="detail-card">
+        <div class="detail-card-title">
+          <span style="display:flex; align-items:center; gap:0.4rem;"><svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polyline points="22 12 18 12 15 21 9 3 6 12 2 12"/></svg><span data-i18n="card_route_title">国内三网回程线路诊断 (Route Traceback)</span></span>
+          <span style="font-size: 0.75rem; color: var(--text-muted);" data-i18n="route_tip">基于 BGP / AS 路径实测评估</span>
+        </div>
+
+        <div class="routes-grid" id="modalRoutesContainer">
+          <!-- Dynamic Routes Injection -->
+        </div>
+      </div>
+
+      <!-- Custom Monitor Targets -->
+      <div class="detail-card" id="targetsCard" style="display: none;">
+        <div class="detail-card-title">
+          <span style="display:flex; align-items:center; gap:0.4rem;">
+            <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><circle cx="12" cy="12" r="6"/><circle cx="12" cy="12" r="2"/></svg>
+            <span data-i18n="custom_targets">自定义监控目标</span>
+          </span>
+          <span style="font-size: 0.75rem; color: var(--text-muted);" data-i18n="targets_admin_hint">目标可在管理后台配置</span>
+        </div>
+
+        <div class="routes-grid" id="modalTargetsContainer">
+          <!-- Dynamic Targets Injection -->
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Documentation / API Modal -->
+  <div id="docsModal" class="modal-backdrop">
+    <div class="modal-window" style="max-width: 650px;">
+      <div class="modal-header">
+        <div class="modal-title" data-i18n="docs_title">探针 API 与部署说明</div>
+        <button class="btn-close" onclick="closeDocsModal()">&times;</button>
+      </div>
+      <div style="font-size: 0.85rem; line-height: 1.6; color: var(--text-secondary);">
+        <p style="margin-bottom: 0.75rem;" data-i18n="docs_p1">节点状态和历史指标由主控 API 提供，Agent 通过 WebSocket 上报实时数据。</p>
+        <p style="margin-bottom: 0.75rem;" data-i18n="docs_p2">节点和账单信息在管理后台维护，数据保存在主控 SQLite 数据库中。</p>
+        <p style="margin-bottom: 0.75rem;" data-i18n="docs_p3">在节点管理中复制安装命令，在目标服务器执行后即可连接主控。</p>
+        <p style="margin-bottom: 0.75rem;" data-i18n="docs_targets">延迟目标与回程诊断按节点单独启用，结果会显示在节点详情中。</p>
+        <div style="margin-top: 1rem; text-align: right;">
+          <button class="btn-control active" onclick="closeDocsModal()" data-i18n="btn_close">好的，知道了</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Scripts -->
+  <script src="/assets/iso-regions.js"></script>
+  <script src="data.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,18 @@
+{
+  "id": "default",
+  "name": "Beszel Modern Dark/Light",
+  "version": "1.0.0",
+  "author": "Moniter Team",
+  "description": "现代化极简自适应探针主题，支持中英双语、Smokeping 延迟监控、三网回程诊断与全球节点点亮",
+  "preview": "preview.png",
+  "entry": "index.html",
+  "features": [
+    "dark_light_theme",
+    "bilingual_i18n",
+    "smokeping_charts",
+    "traceback_routes",
+    "billing_countdown",
+    "world_map_lightup",
+    "in_place_smooth_animation"
+  ]
+}

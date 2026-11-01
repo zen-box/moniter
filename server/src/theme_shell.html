@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="site-name" content="__SITE_NAME__">
+  <title>__SITE_NAME__</title>
+  <style>html,body{margin:0;width:100%;height:100%;overflow:hidden}iframe{display:block;width:100%;height:100dvh;border:0;background:transparent}</style>
+</head>
+<body>
+  <iframe id="theme" title="__SITE_NAME__" sandbox="allow-scripts allow-downloads"></iframe>
+  <script>
+    (() => {
+      const frame = document.getElementById('theme');
+      const themeId = __THEME_ID__;
+      const storageKey = 'moniter_theme_preferences:' + themeId;
+      const template = __THEME_DOCUMENT__;
+      function clean(value) {
+        if (!value || typeof value !== 'object' || Array.isArray(value)) return {};
+        const result = Object.create(null);
+        for (const [key, item] of Object.entries(value).slice(0, 64)) {
+          if (typeof item === 'string' && key.length <= 128 && item.length <= 4096) result[key] = item;
+        }
+        return JSON.stringify(result).length <= 32768 ? result : {};
+      }
+      let preferences = {};
+      try { preferences = clean(JSON.parse(localStorage.getItem(storageKey) || '{}')); } catch {}
+      const context = JSON.stringify({preferences, hash: location.hash})
+        .replace(/</g, '\\u003c').replace(/>/g, '\\u003e').replace(/&/g, '\\u0026');
+      frame.srcdoc = template.replace('__MONITER_THEME_CONTEXT__', context);
+      addEventListener('message', event => {
+        if (event.source !== frame.contentWindow || !event.data || typeof event.data !== 'object') return;
+        if (event.data.type === 'moniter:theme:storage') {
+          try { localStorage.setItem(storageKey, JSON.stringify(clean(event.data.value))); } catch {}
+        }
+        if (event.data.type === 'moniter:theme:hash' && typeof event.data.value === 'string'
+            && event.data.value.length <= 2048 && (event.data.value === '' || event.data.value.startsWith('#'))) {
+          if (location.hash !== event.data.value) history.replaceState(null, '', location.pathname + location.search + event.data.value);
+        }
+      });
+      addEventListener('hashchange', () => frame.contentWindow.postMessage({type:'moniter:theme:navigate', hash:location.hash}, '*'));
+    })();
+  </script>
+</body>
+</html>
