@@ -150,7 +150,7 @@ def package(component, tag, platform, binary, output, agents):
         shutil.copyfile(ROOT / "README.md", staging / "README.md")
         if component == "server":
             # Explicit allowlist: no databases, custom themes, logs, or credentials.
-            for relative in ("web/dist", "web/assets", "web/themes/default"):
+            for relative in ("web/dist", "web/assets"):
                 shutil.copytree(ROOT / relative, staging / relative)
             if not (staging / "web/dist/index.html").is_file():
                 raise ValueError("Build the React frontend before packaging the server")

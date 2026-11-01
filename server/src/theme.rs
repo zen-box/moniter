@@ -2,12 +2,8 @@ use serde::{Deserialize, Serialize};
 use std::fs;
 use std::path::Path;
 
-// 内嵌的官方默认主题文件 (单二进制分发保障)
-pub const EMBEDDED_HTML: &str = include_str!("../../web/themes/default/index.html");
-pub const EMBEDDED_CSS: &str = include_str!("../../web/themes/default/style.css");
-pub const EMBEDDED_JS: &str = include_str!("../../web/themes/default/app.js");
-pub const EMBEDDED_DATA_JS: &str = include_str!("../../web/themes/default/data.js");
-pub const EMBEDDED_MAP_SVG: &str = include_str!("../../web/themes/default/world-map-paths.svg");
+// The React UI and external themes share this map asset.
+pub const EMBEDDED_MAP_SVG: &str = include_str!("../../web/assets/world-map-paths.svg");
 
 /// Third-party JavaScript runs in an opaque-origin iframe. The outer document
 /// only bridges a bounded, theme-specific preferences store and hash navigation.
@@ -65,4 +61,17 @@ pub fn scan_themes(themes_dir: &str) -> Vec<ThemeMeta> {
     list.insert(0,ThemeMeta {id:"default".into(),name:"Moniter".into(),version:env!("CARGO_PKG_VERSION").into(),author:"Moniter".into(),description:"内置监控主题".into(),preview:None,entry:"index.html".into()});
 
     list
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn built_in_react_theme_does_not_require_a_theme_directory() {
+        let directory = std::env::temp_dir().join(format!("moniter-no-themes-{:016x}", rand::random::<u64>()));
+        let themes = super::scan_themes(directory.to_str().unwrap());
+        assert_eq!(themes.len(), 1);
+        assert_eq!(themes[0].id, "default");
+        assert_eq!(themes[0].version, env!("CARGO_PKG_VERSION"));
+        assert!(!directory.exists());
+    }
 }

@@ -85,7 +85,7 @@ class ReleaseTests(unittest.TestCase):
                 "server/agent-version.txt": "0.1.0",
                 "web/dist/index.html": "built app",
                 "web/assets/flags/cn.svg": "flag",
-                "web/themes/default/index.html": "builtin theme",
+                "web/assets/world-map-paths.svg": "map",
                 "web/themes/private/index.html": "user theme",
                 "data/probe.db": "private data",
                 ".env": "private config",
@@ -106,7 +106,7 @@ class ReleaseTests(unittest.TestCase):
                 names = set(contents.namelist())
                 self.assertEqual(names, {
                     "moniter.exe", "README.md", "release.json", "web/dist/index.html",
-                    "web/assets/flags/cn.svg", "web/themes/default/index.html",
+                    "web/assets/flags/cn.svg", "web/assets/world-map-paths.svg",
                     *{f"binaries/aegis-agent-{platform}" for platform in release.TARGETS},
                 })
                 self.assertEqual(json.loads(contents.read("release.json"))["bundled_agent_version"], "0.1.0")

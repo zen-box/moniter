@@ -10,7 +10,7 @@ Rust 主控、轻量 Agent 和 React / HeroUI 控制台。SQLite 保存节点、
 
 | 标签 | 工作流 | 发布产物 |
 | --- | --- | --- |
-| `v0.1.0` | `release-server.yml` | 主控 Linux amd64、Linux arm64、Windows amd64，各自包含 React 前端、内置主题、国旗与三平台 Agent |
+| `v0.1.0` | `release-server.yml` | 主控 Linux amd64、Linux arm64、Windows amd64，各自包含 React 前端、地图、国旗与三平台 Agent |
 | `agent-v0.1.0` | `release-agent.yml` | Agent 的同样三种平台安装包 |
 
 Linux 采用原生 amd64 / arm64 runner 和 musl 静态链接，Windows 使用 MSVC。标签必须与对应 `Cargo.toml` 版本一致。仅推送源码不会发布；主控标签不触发 Agent 编译，Agent 标签也不触发主控编译。Agent Release 不标为主控最新版本，更新检测同时过滤 Agent、草稿与预发布标签。
@@ -32,7 +32,7 @@ cargo build --release --locked --workspace
 ./target/release/aegis-server
 ```
 
-Windows 运行 `target\release\aegis-server.exe`。工作目录应为项目根目录，随主控发布 `web/dist`、`web/assets`、`web/themes` 和所需的 `binaries`。只复制二进制会回退到内嵌旧页面，不能得到 React 控制台。
+Windows 运行 `target\release\aegis-server.exe`。工作目录应为项目根目录，随主控发布 `web/dist`、`web/assets` 和所需的 `binaries`。内置前后台统一使用 React 构建产物；缺少 `web/dist/index.html` 时返回 503 和构建提示，不再回退到旧 HTML 页面。`web/themes` 仅保存用户安装的第三方主题，安装时自动创建，不随源码或官方安装包分发。
 
 - 前台：`http://127.0.0.1:8080/`
 - 后台：`http://127.0.0.1:8080/admin`
@@ -107,6 +107,8 @@ TOTP 目前没有一次性恢复码，请备份验证器；改密码本身不会
 
 上传构建后的 ZIP，或输入公开 GitHub 仓库地址获取最新 Release 的 ZIP。包需包含 `index.html`，可选 `theme.json` 提供名称、版本与作者。
 
+内置主题直接使用 `web/dist` 的 React 页面，不对应 `web/themes/default` 目录。`default` 仅是兼容已有网站配置的内置主题 ID；上传或切换第三方主题后，仍可切回内置 React 前台。
+
 同 ID 的主题更新需显式允许替换并确认，验证失败保留旧主题；可删除未激活的外部主题，内置主题受保护。
 
 第三方主题运行在不共享管理端来源权限的 sandbox iframe，只使用公开监控 API，不能读取管理令牌或调用管理接口。localStorage 是按主题隔离的偏好存储：64 个键、每值 4096 字符、合计 32 KiB；sessionStorage 仅在当前页面内存中保存。支持 hash 深链接与偏好刷新持久化。
@@ -175,6 +177,6 @@ npm audit --registry https://registry.npmjs.org
 
 `web/app/scripts/verify-production.cjs` 用临时数据库与回环端口验证主题隔离、登录会话、安装鉴权、通知和后台交互，不改生产数据库；环境变量 `MONITER_TEST_SERVER`、`MONITER_TEST_AGENT` 可指定待测二进制。`verify-round2.cjs` 验证断线、重叠连接、流量校准、目标重置、规则投递、真实 Agent 和约 402 万行历史并发读取。`verify-public.cjs` 连接本地 8080 检查前台，模拟数据仅在浏览器中。浏览器和 Playwright 路径按当前开发机配置。
 
-源码：`server/src`、`agent/src`、`web/app/src`。静态产物：`web/dist`、`web/assets`、`web/themes`。分发产物：`binaries`。数据库：`data/probe.db`。
+源码：`server/src`、`agent/src`、`web/app/src`。内置前端构建产物：`web/dist`；地图与国旗：`web/assets`；用户安装的主题：`web/themes`。分发产物：`binaries`。数据库：`data/probe.db`。
 
 修复验收记录见 `.ui-review/fixes-2026-11-01-round2.md`；第一轮历史记录保留在 `.ui-review/fixes-2026-11-01.md`。Windows 安装脚本的 AST 检查不能代替真实开机、重装和长时间运行测试；Linux / ARM 交叉构建成功也不能代替目标系统运行验证。

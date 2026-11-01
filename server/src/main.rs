@@ -1,4 +1,3 @@
-mod admin_page;
 mod alert_dispatch;
 mod alert_rules;
 mod alerts_api;
@@ -533,11 +532,8 @@ async fn main() {
         .route_layer(middleware::from_fn_with_state(ctx.clone(), require_admin));
 
     let app = Router::new()
-        // React build assets are served when present; legacy theme handlers remain the fallback.
+        // React is the built-in UI; uploaded themes remain isolated.
         .route("/", get(serve_index))
-        .route("/style.css", get(serve_css))
-        .route("/app.js", get(serve_js))
-        .route("/data.js", get(serve_data_js))
         .route("/world-map-paths.svg", get(serve_map_svg))
         // 一键安装脚本端点
         .route("/install.sh", get(serve_install_sh))
@@ -772,10 +768,7 @@ fn now_millis() -> u64 {
         .unwrap_or(0)
 }
 
-/// 统一的静态资源响应：磁盘优先 → 内嵌兜底，带 ETag 与 304 协商缓存。
-///
-/// 原来这里每次请求都把文件全文读一遍再原样吐出去，既没有缓存头也没有
-/// 条件请求，65KB 的 app.js 每次刷新都要重传一遍。
+/// Shared static asset with an embedded copy and conditional caching.
 fn asset_response(
     req_headers: &HeaderMap,
     disk_path: &str,
@@ -875,21 +868,11 @@ fn dynamic_html_response(html: String) -> Response {
 }
 
 async fn serve_admin_login(State(ctx): State<AppContext>) -> Response {
-    react_app_response(&ctx).unwrap_or_else(|| {
-        dynamic_html_response(inject_site_name(
-            admin_page::ADMIN_LOGIN_HTML,
-            &read_site_name(&ctx),
-        ))
-    })
+    react_app_response(&ctx)
 }
 
 async fn serve_admin_dashboard(State(ctx): State<AppContext>) -> Response {
-    react_app_response(&ctx).unwrap_or_else(|| {
-        dynamic_html_response(inject_site_name(
-            admin_page::ADMIN_DASHBOARD_HTML,
-            &read_site_name(&ctx),
-        ))
-    })
+    react_app_response(&ctx)
 }
 
 async fn serve_index(State(ctx): State<AppContext>) -> Response {
@@ -905,16 +888,21 @@ async fn serve_index(State(ctx): State<AppContext>) -> Response {
             }
         }
     }
-    if let Some(response) = react_app_response(&ctx) {
-        return response;
-    }
-    let disk_path = format!("web/themes/{}/index.html", theme_id);
-    let html = fs::read_to_string(&disk_path).unwrap_or_else(|_| theme::EMBEDDED_HTML.to_string());
-    dynamic_html_response(inject_site_name(&html, &read_site_name(&ctx)))
+    react_app_response(&ctx)
 }
 
-fn react_app_response(ctx: &AppContext) -> Option<Response> {
-    let html = fs::read_to_string("web/dist/index.html").ok()?;
+fn react_app_response(ctx: &AppContext) -> Response {
+    let html = match fs::read_to_string("web/dist/index.html") {
+        Ok(html) => html,
+        Err(_) => {
+            let mut response = (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "Moniter frontend is missing. Run `cd web/app && npm ci && npm run build`, then start Moniter from the project root.\n",
+            ).into_response();
+            response.headers_mut().insert(header::CACHE_CONTROL, HeaderValue::from_static("no-store"));
+            return response;
+        }
+    };
     let html = inject_site_name(&html, &read_site_name(ctx));
     let servers = serde_json::to_string(&public_items(list_all_servers(ctx)))
         .unwrap_or_else(|_| "[]".to_string())
@@ -923,66 +911,15 @@ fn react_app_response(ctx: &AppContext) -> Option<Response> {
         .replace('&', "\\u0026")
         .replace('\u{2028}', "\\u2028")
         .replace('\u{2029}', "\\u2029");
-    Some(dynamic_html_response(
+    dynamic_html_response(
         html.replace("__INITIAL_SERVERS__", &servers),
-    ))
-}
-
-async fn serve_css(State(ctx): State<AppContext>, headers: HeaderMap) -> Response {
-    let theme_id = get_active_theme(&ctx);
-    asset_response(
-        &headers,
-        &format!("web/themes/{}/style.css", theme_id),
-        "text/css; charset=utf-8",
-        theme::EMBEDDED_CSS,
     )
-}
-
-async fn serve_js(State(ctx): State<AppContext>, headers: HeaderMap) -> Response {
-    let theme_id = get_active_theme(&ctx);
-    asset_response(
-        &headers,
-        &format!("web/themes/{}/app.js", theme_id),
-        "application/javascript; charset=utf-8",
-        theme::EMBEDDED_JS,
-    )
-}
-
-/// data.js 需要在末尾注入实时快照，所以不能走通用静态分支。
-async fn serve_data_js(State(ctx): State<AppContext>) -> Response {
-    let theme_id = get_active_theme(&ctx);
-    let disk_file = format!("web/themes/{}/data.js", theme_id);
-
-    let base_js = if Path::new(&disk_file).exists() {
-        fs::read_to_string(&disk_file).unwrap_or_else(|_| theme::EMBEDDED_DATA_JS.to_string())
-    } else {
-        theme::EMBEDDED_DATA_JS.to_string()
-    };
-
-    // 注入完整节点快照，让首次绘制就有离线节点和元数据，避免 HTML 先空白、
-    // 再等前端 API 返回后整表跳变。
-    let servers = public_items(list_all_servers(&ctx));
-    // token 字段带 skip_serializing，这里不会泄露
-    let json_text = serde_json::to_string(&servers).unwrap_or_else(|_| "[]".to_string());
-    let js = format!("{}\nwindow.SERVER_DATA_LIVE = {};", base_js, json_text);
-
-    let mut resp = js.into_response();
-    resp.headers_mut().insert(
-        header::CONTENT_TYPE,
-        HeaderValue::from_static("application/javascript; charset=utf-8"),
-    );
-    // 这份内容随心跳变化，绝对不能缓存
-    resp.headers_mut().insert(
-        header::CACHE_CONTROL,
-        HeaderValue::from_static("no-store, must-revalidate"),
-    );
-    resp
 }
 
 async fn serve_map_svg(headers: HeaderMap) -> Response {
     asset_response(
         &headers,
-        "web/themes/default/world-map-paths.svg",
+        "web/assets/world-map-paths.svg",
         "image/svg+xml",
         theme::EMBEDDED_MAP_SVG,
     )
@@ -3287,7 +3224,7 @@ async fn api_admin_switch_theme(
     if !is_valid_theme_id(&p.theme_id) {
         return Json(serde_json::json!({ "success": false, "message": "非法的主题标识" }));
     }
-    if !Path::new(&format!("web/themes/{}", p.theme_id)).is_dir() {
+    if p.theme_id != "default" && !Path::new(&format!("web/themes/{}", p.theme_id)).is_dir() {
         return Json(serde_json::json!({ "success": false, "message": "主题不存在" }));
     }
 

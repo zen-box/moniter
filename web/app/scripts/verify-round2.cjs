@@ -46,7 +46,7 @@ async function main(){
  await check('manual addresses survive heartbeats and public outputs hide IP by default',async()=>{
   await configure(created.id,{ipv4:'192.0.2.8',ipv6:'2001:db8::8'});await sleep(1100);assert.equal((await node(created.id)).ipv4,'192.0.2.8');
   const publicNodes=await api('/api/v1/servers',null,true);assert.equal(publicNodes.find(n=>n.id===created.id).ipv4,'');
-  for(const url of ['/','/data.js']){const text=await(await fetch(origin+url)).text();assert.ok(!text.includes('192.0.2.8')&&!text.includes('2001:db8::8'),url+' exposes IP')}
+  const page=await fetch(origin+'/');assert.equal(page.status,200);const text=await page.text();assert.ok(!text.includes('192.0.2.8')&&!text.includes('2001:db8::8'),'Initial React snapshot exposes IP');assert.equal((await fetch(origin+'/data.js')).status,404);
   const payload=await new Promise((resolve,reject)=>{const socket=new WebSocket(origin.replace('http','ws')+'/ws/client');const timer=setTimeout(()=>{socket.close();reject(Error('No viewer snapshot'))},4000);socket.addEventListener('message',e=>{clearTimeout(timer);socket.close();resolve(JSON.parse(e.data))},{once:true})});assert.equal(payload.find(n=>n.id===created.id).ipv4,'');
   await configure(created.id,{public_ip:true});assert.equal((await api('/api/v1/servers',null,true)).find(n=>n.id===created.id).ipv4,'192.0.2.8');await configure(created.id,{public_ip:false});
  });

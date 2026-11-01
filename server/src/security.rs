@@ -47,7 +47,7 @@ fn source_ip_with_trust(headers: &HeaderMap, peer: Option<SocketAddr>, trusted: 
 
 fn public_read_path(path: &str) -> bool {
     matches!(path, "/api/v1/servers" | "/api/v1/site-settings" | "/api/v1/targets" | "/api/v1/themes" | "/api/v1/ping"
-        | "/world-map-paths.svg" | "/style.css" | "/app.js" | "/data.js")
+        | "/world-map-paths.svg")
         || path.starts_with("/api/v1/metrics/") || path.starts_with("/api/v1/target_metrics/")
         || path.starts_with("/themes/") || path.starts_with("/assets/") || path.starts_with("/ui-assets/")
 }

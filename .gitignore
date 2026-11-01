@@ -23,8 +23,7 @@ node_modules/
 __pycache__/
 *.pyc
 # Locally installed third-party themes are runtime content.
-/web/themes/*
-!/web/themes/default/
+/web/themes/
 # Local review screenshots.
 /*.png
 /.DS_Store

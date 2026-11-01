@@ -56,13 +56,19 @@ async function stop() { if(!server || server.exitCode!==null)return; await new P
   if(fs.existsSync(path.join(fixture,"fixture.db")))throw Error("Choose a fresh fixture directory; an existing test database will not be overwritten");
   fs.cpSync(path.join(root,"web/dist"),path.join(fixture,"web/dist"),{recursive:true});
   fs.cpSync(path.join(root,"web/assets"),path.join(fixture,"web/assets"),{recursive:true});
-  fs.mkdirSync(path.join(fixture,"web/themes/default"),{recursive:true});
-  fs.copyFileSync(path.join(root,"web/themes/default/world-map-paths.svg"),path.join(fixture,"web/themes/default/world-map-paths.svg"));
   const listener=net.createServer(); await new Promise(r=>listener.listen(0,"127.0.0.1",r)); const port=listener.address().port; await new Promise(r=>listener.close(r)); origin=`http://127.0.0.1:${port}`;
   await start(port);
   await check("administrative endpoints reject anonymous callers",async()=>{for(const route of ["status","servers","themes","alerts","site-settings","updates"]){assert.equal((await fetch(origin+"/api/v1/admin/"+route)).status,401);} assert.equal((await fetch(origin+"/api/v1/admin/updates/check",{method:"POST"})).status,401);});
   const login=await api("/api/v1/admin/login",{method:"POST",body:JSON.stringify({username:"admin",password})}); assert.equal(login.success,true); session=login.token;
   await check("version APIs expose package version and respect disabled checks",async()=>{for(const [route,method] of [["updates","GET"],["updates/check","POST"]]){const status=await api("/api/v1/admin/"+route,{method});assert.equal(status.current_version,"0.1.0");assert.equal(status.enabled,false);assert.equal(status.checked_at,null);assert.equal(status.update_available,false);}});
+  await check("built-in React theme has no legacy directory, routes or bundled pages",async()=>{
+    assert.equal(fs.existsSync(path.join(fixture,"web/themes/default")),false);
+    const themes=await api("/api/v1/admin/themes");assert.ok(themes.themes.some(theme=>theme.id==="default"));
+    assert.equal((await api("/api/v1/admin/theme/switch",{method:"POST",body:JSON.stringify({theme_id:"default"})})).success,true);
+    for(const route of ["/","/admin","/admin/login"]){const response=await fetch(origin+route);assert.equal(response.status,200);const html=await response.text();assert.ok(html.includes('/ui-assets/'));assert.ok(!html.includes('href="/style.css"'))}
+    for(const route of ["/style.css","/app.js","/data.js","/themes/default/index.html"]){assert.equal((await fetch(origin+route)).status,404,route)}
+    const map=await fetch(origin+"/world-map-paths.svg");assert.equal(map.status,200);assert.ok((await map.text()).includes("data-code"));
+  });
   await check("administration refuses opaque origins even with a valid fixture session",async()=>{assert.equal((await fetch(origin+"/api/v1/admin/status",{headers:{Authorization:`Bearer ${session}`,Origin:"null"}})).status,403);});
   const node=await api("/api/v1/admin/servers/add",{method:"POST",body:JSON.stringify({name:"Production fixture",tags:"test"})}); assert.equal(node.success,true);
   await check("node edits persist addresses and legacy callers preserve optional settings",async()=>{
@@ -224,6 +230,11 @@ async function stop() { if(!server || server.exitCode!==null)return; await new P
     let offline=false;for(let i=0;i<40;i++){if((await(await fetch(origin+"/api/v1/servers")).json())[0].status==="offline"){offline=true;break}await new Promise(resolve=>setTimeout(resolve,100))}assert.equal(offline,true);
   });
   await check("idle unauthenticated agent is disconnected within the authentication deadline",async()=>{const socket=new WebSocket(origin.replace("http","ws")+"/ws/agent");await new Promise((resolve,reject)=>{const timer=setTimeout(()=>{socket.close();reject(Error("Unauthenticated agent stayed open"))},7500);socket.onclose=()=>{clearTimeout(timer);resolve()};socket.onerror=()=>{};})});
+  await check("missing React assets return a build error instead of reviving legacy pages",async()=>{
+    const directory=path.join(fixture,"web/dist"),temporary=path.join(fixture,"web/dist-unavailable");fs.renameSync(directory,temporary);
+    try{for(const route of ["/","/admin","/admin/login"]){const response=await fetch(origin+route);assert.equal(response.status,503,route);assert.equal(response.headers.get("cache-control"),"no-store");assert.ok((await response.text()).includes("npm run build"));}assert.equal(await(await fetch(origin+"/api/v1/ping")).text(),"pong")}
+    finally{fs.renameSync(temporary,directory)}
+  });
   await check("logout revokes the fixture session",async()=>{assert.equal((await api("/api/v1/admin/logout",{method:"POST"})).success,true);assert.equal((await fetch(origin+"/api/v1/admin/status",{headers:{Authorization:`Bearer ${session}`}})).status,401)});
   assert.deepEqual(errors,[]);assert.deepEqual(failures,[]);
   const report={status:"passed",checks:passed,browserErrors:errors};fs.writeFileSync(path.join(output,"production-result-2026-11-01.json"),JSON.stringify(report,null,2));console.log(JSON.stringify(report,null,2));
