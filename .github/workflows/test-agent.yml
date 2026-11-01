@@ -3,8 +3,10 @@ name: Test Agent
 on:
   push:
     branches: [agent]
+    paths: ['agent/**', 'Cargo.toml', 'Cargo.lock', 'scripts/**', '.github/workflows/**']
   pull_request:
     branches: [agent]
+    paths: ['agent/**', 'Cargo.toml', 'Cargo.lock', 'scripts/**', '.github/workflows/**']
 
 permissions:
   contents: read
