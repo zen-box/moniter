@@ -1,0 +1,30 @@
+name: Test Agent
+
+on:
+  push:
+    branches: [agent]
+  pull_request:
+    branches: [agent]
+
+permissions:
+  contents: read
+
+jobs:
+  agent:
+    strategy:
+      matrix:
+        runner: [ubuntu-24.04, ubuntu-24.04-arm, windows-2025]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+      - uses: actions/setup-python@v7.1.0
+        with:
+          python-version: '3.12'
+      - name: Release archive contracts
+        run: python scripts/test-release.py
+      - name: Test and build Agent workspace
+        run: |
+          rustup update stable --no-self-update
+          rustup default stable
+          cargo test --workspace --locked
+          cargo build --workspace --release --locked

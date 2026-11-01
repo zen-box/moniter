@@ -26,41 +26,8 @@ def executable(platform):
 
 
 class ReleaseTests(unittest.TestCase):
-    def test_server_fetches_the_pinned_agent_release_without_building(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            (root / "server").mkdir()
-            (root / "server/agent-version.txt").write_text("0.7.0")
-            assets, payloads = [], {}
-            for platform in release.TARGETS:
-                name = release.archive_name("agent", "0.7.0", platform)
-                url = f"https://github.com/{release.REPO}/releases/download/agent-v0.7.0/{name}"
-                assets.append({"name": name, "browser_download_url": url})
-                stream, binary = io.BytesIO(), executable(platform)
-                if platform.startswith("windows"):
-                    with zipfile.ZipFile(stream, "w") as archive:
-                        archive.writestr(release.executable_name("agent", platform), binary)
-                else:
-                    with tarfile.open(fileobj=stream, mode="w:gz") as archive:
-                        entry = tarfile.TarInfo(release.executable_name("agent", platform))
-                        entry.size = len(binary)
-                        archive.addfile(entry, io.BytesIO(binary))
-                payloads[url] = stream.getvalue()
-            api = f"https://api.github.com/repos/{release.REPO}/releases/tags/agent-v0.7.0"
-            payloads[api] = json.dumps({"tag_name":"agent-v0.7.0", "draft":False, "prerelease":False, "assets":assets}).encode()
-            with patch.object(release, "ROOT", root), patch.object(release, "download", side_effect=lambda url, *args, **kwargs: payloads[url]) as download:
-                self.assertEqual(release.fetch_agents(root / "agents"), "0.7.0")
-                self.assertEqual(download.call_count, 4)
-            for platform in release.TARGETS:
-                self.assertEqual((root / f"agents/aegis-agent-{platform}").read_bytes(), executable(platform))
-            assets[0]["browser_download_url"] = "https://example.com/untrusted"
-            payloads[api] = json.dumps({"tag_name":"agent-v0.7.0", "draft":False, "prerelease":False, "assets":assets}).encode()
-            with patch.object(release, "ROOT", root), patch.object(release, "download", side_effect=lambda url, *args, **kwargs: payloads[url]):
-                with self.assertRaises(ValueError):
-                    release.fetch_agents(root / "bad-agents")
-
     def test_tags_are_independent_and_must_match_component_version(self):
-        for component, prefix, wrong_prefix in [("server", "v", "agent-v"), ("agent", "agent-v", "v")]:
+        for component, prefix, wrong_prefix in [("agent", "agent-v", "v")]:
             current = tomllib.loads((release.ROOT / component / "Cargo.toml").read_text())["package"]["version"]
             self.assertEqual(release.version(component, prefix + current), current)
             for tag in (wrong_prefix + current, prefix + current + "-rc.1"):
@@ -76,42 +43,30 @@ class ReleaseTests(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     release.check_binary(binary, platform)
 
-    def test_server_archive_includes_ui_and_agents_but_no_runtime_state(self):
-        with tempfile.TemporaryDirectory() as directory:
-            root = Path(directory)
-            for filename, data in {
-                "README.md": "test",
-                "install.sh": "#!/usr/bin/env bash\n",
-                "install.ps1": "# installer\n",
-                "server/Cargo.toml": '[package]\nversion="0.1.0"',
-                "server/agent-version.txt": "0.1.0",
-                "web/dist/index.html": "built app",
-                "web/assets/flags/cn.svg": "flag",
-                "web/assets/world-map-paths.svg": "map",
-                "web/themes/private/index.html": "user theme",
-                "data/probe.db": "private data",
-                ".env": "private config",
-                "server.log": "private credentials",
-            }.items():
-                path = root / filename
-                path.parent.mkdir(parents=True, exist_ok=True)
-                path.write_text(data)
-            agents = root / "agents"
-            agents.mkdir()
-            for platform in release.TARGETS:
-                (agents / f"aegis-agent-{platform}").write_bytes(executable(platform))
-            binary = root / "server.exe"
-            binary.write_bytes(executable("windows-amd64"))
-            with patch.object(release, "ROOT", root):
-                archive = release.package("server", "v0.1.0", "windows-amd64", binary, root / "out", agents)
-            with zipfile.ZipFile(archive) as contents:
-                names = set(contents.namelist())
-                self.assertEqual(names, {
-                    "moniter.exe", "README.md", "release.json", "install.sh", "install.ps1", "web/dist/index.html",
-                    "web/assets/flags/cn.svg", "web/assets/world-map-paths.svg",
-                    *{f"binaries/aegis-agent-{platform}" for platform in release.TARGETS},
-                })
-                self.assertEqual(json.loads(contents.read("release.json"))["bundled_agent_version"], "0.1.0")
+    def test_agent_archives_have_only_binary_readme_and_manifest(self):
+        for platform in release.TARGETS:
+            with self.subTest(platform=platform), tempfile.TemporaryDirectory() as directory:
+                root = Path(directory)
+                for filename, data in {"README.md":"agent", "agent/Cargo.toml":'[package]\nversion="0.1.0"', "agent.token":"private"}.items():
+                    path=root/filename; path.parent.mkdir(parents=True,exist_ok=True); path.write_text(data)
+                binary=root/"binary"; binary.write_bytes(executable(platform))
+                with patch.object(release,"ROOT",root):
+                    path=release.package("agent","agent-v0.1.0",platform,binary,root/"out")
+                name=release.executable_name("agent",platform)
+                if path.suffix==".zip":
+                    with zipfile.ZipFile(path) as archive:
+                        self.assertEqual(set(archive.namelist()),{name,"README.md","release.json"})
+                        self.assertEqual(archive.read(name),executable(platform))
+                        manifest=json.loads(archive.read("release.json"))
+                else:
+                    with tarfile.open(path) as archive:
+                        self.assertEqual(set(archive.getnames()),{name,"README.md","release.json"})
+                        self.assertEqual(archive.extractfile(name).read(),executable(platform))
+                        self.assertTrue(archive.getmember(name).mode & 0o111)
+                        manifest=json.load(archive.extractfile("release.json"))
+                self.assertEqual((manifest["component"],manifest["platform"],manifest["version"]),("agent",platform,"0.1.0"))
+        with self.assertRaisesRegex(ValueError,"main branch"):
+            release.version("server","v0.1.0")
 
 
 if __name__ == "__main__":

@@ -35,11 +35,14 @@ jobs:
       CARGO_TERM_COLOR: always
     steps:
       - uses: actions/checkout@v7.0.1
+        with:
+          fetch-depth: 0
       - uses: actions/setup-python@v7.1.0
         with:
           python-version: '3.12'
       - name: Validate Agent version
         run: |
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/agent
           python scripts/release.py validate agent "$RELEASE_TAG"
           python scripts/test-release.py
       - name: Install Rust target

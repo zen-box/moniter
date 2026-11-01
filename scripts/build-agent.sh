@@ -47,7 +47,7 @@ for name in "${WANTED[@]}"; do
     continue
   fi
 
-  if ! cargo build --release -p aegis-agent --target "$target"; then
+  if ! cargo build --release --locked -p aegis-agent --target "$target"; then
     echo "   失败：交叉编译出错（通常是缺少链接器，例如 musl-gcc / mingw-w64）"
     skip=$((skip + 1))
     continue
