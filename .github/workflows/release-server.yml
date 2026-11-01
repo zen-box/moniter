@@ -27,6 +27,7 @@ jobs:
           git merge-base --is-ancestor "$GITHUB_SHA" origin/main
           python scripts/release.py validate server "$RELEASE_TAG"
           python scripts/test-release.py
+          bash -n install.sh
       - uses: actions/setup-node@v7.1.0
         with:
           node-version: '24'
@@ -101,6 +102,9 @@ jobs:
           rustup update stable --no-self-update
           rustup default stable
           rustup target add '${{ matrix.target }}'
+      - name: Test Linux installer lifecycle
+        if: runner.os == 'Linux'
+        run: python scripts/test-install-linux.py
       - name: Install native musl toolchain
         if: runner.os == 'Linux'
         run: |
@@ -112,6 +116,10 @@ jobs:
         run: |
           cargo test --locked -p aegis-server --target '${{ matrix.target }}'
           cargo build --release --locked -p aegis-server --target '${{ matrix.target }}'
+      - name: Test Windows installer with the built release binary
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: ./scripts/test-install-windows.ps1 -ServerBinary target/${{ matrix.target }}/release/aegis-server.exe
       - name: Package server with UI and released Agents
         env:
           PLATFORM: ${{ matrix.platform }}

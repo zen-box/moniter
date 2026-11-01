@@ -194,7 +194,7 @@ npm ci
 npm run build
 ```
 
-GitHub Actions 检查发行包格式及安装、更新和回滚流程。Agent 的构建和测试在 `agent` 分支独立运行。
+推送版本标签后，GitHub Actions 执行测试、构建三平台安装包并创建 Release。主控发布同时检查发行包格式及安装、更新和回滚流程。Agent 的构建和测试在 `agent` 分支独立运行。普通代码推送与 PR 不触发构建。
 
 ## 版本与自动构建
 
@@ -207,7 +207,7 @@ GitHub Actions 检查发行包格式及安装、更新和回滚流程。Agent �
 | `main` | `v0.1.0` | `release-server.yml` | 主控 Linux amd64、Linux arm64、Windows amd64，各自包含 React 前端、地图、国旗与已发布的三平台 Agent 二进制 |
 | `agent` | `agent-v0.1.0` | `release-agent.yml` | Agent 的同样三种平台安装包 |
 
-Linux 采用原生 amd64 / arm64 runner 和 musl 静态链接，Windows 使用 MSVC。标签必须在对应分支创建，并与该分支的 `Cargo.toml` 版本一致。仅推送源码不会发布；更新 `main` 不编译 Agent，主控标签不触发 Agent 编译，Agent 标签也不触发主控编译。Agent Release 不标为主控最新版本，更新检测同时过滤 Agent、草稿与预发布标签。请分别提交和推送两个分支，不要把 `agent` 合并回 `main`。
+Linux 采用原生 amd64 / arm64 runner 和 musl 静态链接，Windows 使用 MSVC。标签必须在对应分支创建，并与该分支的 `Cargo.toml` 版本一致。普通代码推送与 PR 不触发构建；只有推送 `v*` 或 `agent-v*` 标签才执行对应组件的测试、编译、打包和 Release 发布。更新 `main` 不编译 Agent，主控标签不触发 Agent 编译，Agent 标签也不触发主控编译。Agent Release 不标为主控最新版本，更新检测同时过滤 Agent、草稿与预发布标签。请分别提交和推送两个分支，不要把 `agent` 合并回 `main`。
 
 **首次发布先在 `agent` 分支推 `agent-v0.1.0`，等 Agent Release 成功后，再在 `main` 分支推 `v0.1.0`。** 主控从 `server/agent-version.txt` 指定的既有 Agent Release 下载三平台产物打包；缺少指定 Agent Release 时，主控发行流程会停止。以后只改主控时，更新 `server/Cargo.toml` 与前端包版本，再打主控标签；Agent 无变动无需发新版本。Agent 升级时，在 `agent` 分支发布新的 `agent-vX.Y.Z`，再按需修改 `main` 的 `agent-version.txt`。
 
