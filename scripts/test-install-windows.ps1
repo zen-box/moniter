@@ -1,4 +1,4 @@
-param([string]$ServerBinary = (Join-Path (Split-Path -Parent $PSScriptRoot) 'target-review\release\aegis-server.exe'))
+param([string]$ServerBinary = (Join-Path (Split-Path -Parent $PSScriptRoot) 'target\release\aegis-server.exe'))
 # Exercise the installer with a real server and isolated files. Only GitHub,
 # permissions and Task Scheduler are mocked; no administrator access is needed.
 $ErrorActionPreference = 'Stop'

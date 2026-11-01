@@ -28,3 +28,12 @@ __pycache__/
 /*.png
 /.DS_Store
 /Thumbs.db
+
+# Local development tools, reports and machine-specific verification helpers.
+/.codex/
+/.claude/
+/*.local.md
+/scripts/backup-before-upgrade.cjs
+/scripts/verify-windows-installer.ps1
+/web/app/scripts/verify-*.cjs
+/web/app/scripts/audit-dependencies.cjs
