@@ -207,17 +207,17 @@ npm run build
 
 ## 版本与自动构建
 
-当前版本为 **0.1.2**，官方仓库为 `zen-box/moniter`。后台「网站设置 → 版本更新」显示当前版本、最新正式版和上次检查时间，可手动检查。主控启动后异步检查，此后每 6 小时检查 GitHub Releases；有新版本时后台顶栏出现入口。检查失败保留上次成功结果，60 秒内的重复检查合并。尚未发布正式版时显示「尚未发布正式版」。仅提示更新，不自动覆盖或重启程序。
+当前版本为 **0.1.3**，官方仓库为 `zen-box/moniter`。后台「网站设置 → 版本更新」显示当前版本、最新正式版和上次检查时间，可手动检查。主控启动后异步检查，此后每 6 小时检查 GitHub Releases；有新版本时后台顶栏出现入口。检查失败保留上次成功结果，60 秒内的重复检查合并。尚未发布正式版时显示「尚未发布正式版」。仅提示更新，不自动覆盖或重启程序。
 
 主控与 Agent **分别维护在两个分支，独立构建、独立发布**：`main` 仅含主控与前端源码，`agent` 仅含 Agent 源码。两者的 Cargo 工作区、锁文件和构建工作流分开维护。
 
 | 分支 | 标签 | 工作流 | 发布产物 |
 | --- | --- | --- | --- |
-| `main` | `v0.1.2` | `release-server.yml` | 主控 Linux amd64、Linux arm64、Windows amd64，各自包含 React 前端、地图、国旗与已发布的三平台 Agent 二进制 |
-| `agent` | `agent-v0.1.1` | `release-agent.yml` | Agent 的同样三种平台安装包 |
+| `main` | `v0.1.3` | `release-server.yml` | 主控 Linux amd64、Linux arm64、Windows amd64，各自包含 React 前端、地图、国旗与已发布的三平台 Agent 二进制 |
+| `agent` | `agent-v0.1.2` | `release-agent.yml` | Agent 的同样三种平台安装包 |
 
 Linux 采用原生 amd64 / arm64 runner 和 musl 静态链接，Windows 使用 MSVC。标签必须在对应分支创建，并与该分支的 `Cargo.toml` 版本一致。普通代码推送与 PR 不触发构建；只有推送 `v*` 或 `agent-v*` 标签才执行对应组件的测试、编译、打包和 Release 发布。更新 `main` 不编译 Agent，主控标签不触发 Agent 编译，Agent 标签也不触发主控编译。Agent Release 不标为主控最新版本，更新检测同时过滤 Agent、草稿与预发布标签。请分别提交和推送两个分支，不要把 `agent` 合并回 `main`。
 
 主控从 `server/agent-version.txt` 指定的既有 Agent Release 下载三平台产物打包；缺少指定 Agent Release 时，主控发行流程会停止。只改主控时，更新 `server/Cargo.toml`、前端包版本及对应锁文件，再打主控标签；Agent 无变动无需发新版本。Agent 升级时，先在 `agent` 分支发布新的 `agent-vX.Y.Z`，等 Agent Release 成功后，再按需修改 `main` 的 `agent-version.txt` 并发布主控。
 
-发布文件命名为 `moniter-0.1.2-<平台>.tar.gz`（Windows 为 `.zip`），Agent 为 `moniter-agent-0.1.1-<平台>`。主控解压后在该目录运行 `./moniter` 或 `moniter.exe`；Agent 可运行 `./moniter-agent`。包内 `release.json` 记录组件、平台和所含 Agent 版本。发布包采用目录白名单，不含 `data`、日志、凭据或用户上传的主题。
+发布文件命名为 `moniter-0.1.3-<平台>.tar.gz`（Windows 为 `.zip`），Agent 为 `moniter-agent-0.1.2-<平台>`。主控解压后在该目录运行 `./moniter` 或 `moniter.exe`；Agent 可运行 `./moniter-agent`。包内 `release.json` 记录组件、平台和所含 Agent 版本。发布包采用目录白名单，不含 `data`、日志、凭据或用户上传的主题。

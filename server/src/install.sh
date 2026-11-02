@@ -17,8 +17,8 @@ HAD_BINARY=0; HAD_TOKEN=0; HAD_UNIT=0; WAS_ACTIVE=0; WAS_ENABLED=0
 [[ ! -f "$INSTALL_DIR/aegis-agent" ]] || { cp -p "$INSTALL_DIR/aegis-agent" "$STAGING/previous"; HAD_BINARY=1; }
 [[ ! -f "$TOKEN_FILE" ]] || { cp -p "$TOKEN_FILE" "$STAGING/token.previous"; HAD_TOKEN=1; }
 [[ ! -f "$UNIT" ]] || { cp -p "$UNIT" "$STAGING/unit.previous"; HAD_UNIT=1; }
-systemctl is-active --quiet aegis-agent && WAS_ACTIVE=1
-systemctl is-enabled --quiet aegis-agent && WAS_ENABLED=1
+systemctl is-active --quiet aegis-agent >/dev/null 2>&1 && WAS_ACTIVE=1
+systemctl is-enabled --quiet aegis-agent >/dev/null 2>&1 && WAS_ENABLED=1
 cleanup() {
   result=$?
   if [[ $result -ne 0 && $CHANGED -eq 1 ]]; then
@@ -64,11 +64,13 @@ mv -f "$STAGING/unit" "$UNIT"
 chmod 644 "$UNIT"
 systemctl daemon-reload
 systemctl enable aegis-agent >/dev/null
-systemctl restart aegis-agent
-sleep 2
-if ! systemctl is-active --quiet aegis-agent; then
-  journalctl -u aegis-agent -n 20 --no-pager >&2 || true
+STARTED_AT=$(date +%s)
+startup_failed() {
+  journalctl -u aegis-agent --since "@$STARTED_AT" -n 20 --no-pager >&2 || true
   exit 1
-fi
+}
+systemctl restart aegis-agent || startup_failed
+sleep 2
+systemctl is-active --quiet aegis-agent || startup_failed
 CHANGED=0
 echo '安装完成，Agent 已启动并设置开机自启'
