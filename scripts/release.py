@@ -138,6 +138,26 @@ def write_archive(staging, destination):
                 archive.add(path, arcname=path.name)
 
 
+def copy_frontend(destination):
+    source = ROOT / "web/dist"
+    manifest_path = source / "build-manifest.json"
+    if not manifest_path.is_file():
+        shutil.copytree(source, destination)
+        return
+    entries = json.loads(manifest_path.read_text(encoding="utf-8"))
+    files = {"index.html", "build-manifest.json"}
+    for entry in entries.values():
+        files.add(entry["file"])
+        files.update(entry.get("css", []))
+        files.update(entry.get("assets", []))
+    for relative in sorted(files):
+        path = (source / relative).resolve()
+        path.relative_to(source.resolve())
+        target = destination / relative
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copyfile(path, target)
+
+
 def package(component, tag, platform, binary, output, agents):
     current = version(component, tag)
     check_binary(binary, platform)
@@ -155,8 +175,8 @@ def package(component, tag, platform, binary, output, agents):
             for installer in ("install.sh", "install.ps1"):
                 shutil.copyfile(ROOT / installer, staging / installer)
             (staging / "install.sh").chmod(0o755)
-            for relative in ("web/dist", "web/assets"):
-                shutil.copytree(ROOT / relative, staging / relative)
+            copy_frontend(staging / "web/dist")
+            shutil.copytree(ROOT / "web/assets", staging / "web/assets")
             if not (staging / "web/dist/index.html").is_file():
                 raise ValueError("Build the React frontend before packaging the server")
             for target_platform in TARGETS:

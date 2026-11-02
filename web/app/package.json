@@ -1,11 +1,13 @@
 {
   "name": "moniter-console-ui",
   "private": true,
-  "version": "0.1.0",
+  "version": "0.1.1",
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "build": "tsc -b && vite build",
+    "build": "tsc -b && node scripts/build.mjs",
+    "build:release": "tsc -b && node scripts/build.mjs --clean",
+    "test:build": "node --test scripts/build.test.mjs",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {

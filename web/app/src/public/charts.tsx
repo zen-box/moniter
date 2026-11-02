@@ -1,17 +1,7 @@
-import { useId } from "react";
-import { Button, Spinner } from "@heroui/react";
+import { memo, useMemo } from "react";
 import { Maximize2, ChartNoAxesCombined } from "lucide-react";
-import {
-  Area,
-  CartesianGrid,
-  ComposedChart,
-  Line,
-  ResponsiveContainer,
-  Tooltip,
-  XAxis,
-  YAxis,
-} from "recharts";
 import { bytes, words, type Language } from "./format";
+import { LineChart } from "./LineChart";
 import type { ChartPoint, HistoryRange } from "./useNodeHistory";
 
 export type Series = { key: string; name: string; color: string };
@@ -40,22 +30,8 @@ export const palette = [
 
 export function metricSpecs(l: Language): ChartSpec[] {
   return [
-    {
-      id: "cpu",
-      title: words(l, "CPU 使用率", "CPU usage"),
-      unit: "%",
-      percent: true,
-      series: [{ key: "cpu", name: "CPU", color: palette[0] }],
-    },
-    {
-      id: "memory",
-      title: words(l, "内存使用率", "Memory usage"),
-      unit: "%",
-      percent: true,
-      series: [
-        { key: "memory", name: words(l, "内存", "Memory"), color: palette[2] },
-      ],
-    },
+    { id: "cpu", title: words(l, "CPU 使用率", "CPU usage"), unit: "%", percent: true, series: [{ key: "cpu", name: "CPU", color: palette[0] }] },
+    { id: "memory", title: words(l, "内存使用率", "Memory usage"), unit: "%", percent: true, series: [{ key: "memory", name: words(l, "内存", "Memory"), color: palette[2] }] },
     {
       id: "network",
       title: words(l, "网络吞吐", "Network throughput"),
@@ -66,15 +42,7 @@ export function metricSpecs(l: Language): ChartSpec[] {
         { key: "netIn", name: words(l, "下载", "Download"), color: palette[1] },
       ],
     },
-    {
-      id: "disk",
-      title: words(l, "磁盘使用率", "Disk usage"),
-      unit: "%",
-      percent: true,
-      series: [
-        { key: "disk", name: words(l, "磁盘", "Disk"), color: palette[3] },
-      ],
-    },
+    { id: "disk", title: words(l, "磁盘使用率", "Disk usage"), unit: "%", percent: true, series: [{ key: "disk", name: words(l, "磁盘", "Disk"), color: palette[3] }] },
     {
       id: "load",
       title: words(l, "系统负载", "System load"),
@@ -82,46 +50,70 @@ export function metricSpecs(l: Language): ChartSpec[] {
       series: [
         { key: "load1", name: words(l, "1 分钟", "1 min"), color: palette[0] },
         { key: "load5", name: words(l, "5 分钟", "5 min"), color: palette[2] },
-        {
-          key: "load15",
-          name: words(l, "15 分钟", "15 min"),
-          color: palette[3],
-        },
+        { key: "load15", name: words(l, "15 分钟", "15 min"), color: palette[3] },
       ],
     },
     {
       id: "connections",
       title: words(l, "网络连接", "Connections"),
-      unit: words(l, "个", "connections"),
+      unit: "",
       series: [
         { key: "tcp", name: "TCP", color: palette[1] },
         { key: "udp", name: "UDP", color: palette[0] },
       ],
     },
-    {
-      id: "processes",
-      title: words(l, "进程数", "Processes"),
-      unit: words(l, "个", "processes"),
-      series: [
-        {
-          key: "processes",
-          name: words(l, "进程", "Processes"),
-          color: palette[2],
-        },
-      ],
-    },
+    { id: "processes", title: words(l, "进程数", "Processes"), unit: "", series: [{ key: "processes", name: words(l, "进程", "Processes"), color: palette[2] }] },
   ];
 }
 
-function tickValue(value: number, rate?: boolean) {
-  if (rate) return bytes(value, true).replace(/\.0 /, " ").replace(" ", "");
-  if (Math.abs(value) >= 1000) return `${(value / 1000).toFixed(1)}k`;
-  return Number(value.toFixed(2)).toString();
+const timeFormats = new Map<string, Intl.DateTimeFormat>();
+function timeFormat(language: Language, kind: "day" | "clock" | "full") {
+  const key = `${language}:${kind}`;
+  let format = timeFormats.get(key);
+  if (!format) {
+    format = new Intl.DateTimeFormat(
+      language === "zh" ? "zh-CN" : "en-US",
+      kind === "day"
+        ? { month: "numeric", day: "numeric" }
+        : kind === "clock"
+          ? { hour: "2-digit", minute: "2-digit", hour12: false }
+          : { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit", hour12: false },
+    );
+    timeFormats.set(key, format);
+  }
+  return format;
 }
 
-export function MetricChart({
+function compact(value: number) {
+  if (Math.abs(value) >= 1000) return `${Number((value / 1000).toFixed(1))}k`;
+  if (Math.abs(value) < 10 && value % 1) return String(Number(value.toFixed(2)));
+  return String(Number(value.toFixed(1)));
+}
+
+export function chartFormatters(spec: ChartSpec, language: Language, range: HistoryRange) {
+  const long = range === "7d" || range === "30d";
+  return {
+    formatTick: (value: number) =>
+      spec.percent ? `${Math.round(value)}%` : spec.rate ? bytes(value).replace(".0 ", " ") : compact(value),
+    formatValue: (value: number) =>
+      spec.rate
+        ? bytes(value, true)
+        : spec.percent
+          ? `${value.toFixed(1)}%`
+          : spec.unit === "ms"
+            ? `${value.toFixed(1)} ms`
+            : spec.id === "load"
+              ? value.toFixed(2)
+              : Math.round(value).toLocaleString(language === "zh" ? "zh-CN" : "en-US"),
+    formatTime: (ts: number) => timeFormat(language, long ? "day" : "clock").format(ts * 1000),
+    formatFullTime: (ts: number) => timeFormat(language, "full").format(ts * 1000),
+  };
+}
+
+export const MetricChart = memo(function MetricChart({
   spec,
   points,
+  domain,
   language: l,
   range,
   loading = false,
@@ -130,210 +122,71 @@ export function MetricChart({
 }: {
   spec: ChartSpec;
   points: ChartPoint[];
+  domain: [number, number];
   language: Language;
   range: HistoryRange;
   loading?: boolean;
   large?: boolean;
-  onExpand?: () => void;
+  onExpand?: (spec: ChartSpec) => void;
 }) {
-  const unique = useId().replace(/:/g, "");
-  const hasData = points.some((p) =>
-    spec.series.some((s) => typeof p[s.key] === "number"),
+  const formatters = useMemo(() => chartFormatters(spec, l, range), [spec, l, range]);
+  const hasData = useMemo(
+    () => points.some((p) => p.ts >= domain[0] && spec.series.some((s) => typeof p[s.key] === "number")),
+    [points, domain, spec],
   );
-  const shortTime = (v: number) =>
-    new Date(v * 1000).toLocaleString(
-      l === "zh" ? "zh-CN" : "en-US",
-      range === "7d" || range === "30d"
-        ? { month: "numeric", day: "numeric" }
-        : { hour: "2-digit", minute: "2-digit", hour12: false },
-    );
   return (
     <section
-      className={`mp-chart-panel ${large ? "mp-chart-large" : ""}`}
-      style={
-        {
-          "--chart-tone": spec.series[0]?.color || palette[0],
-        } as React.CSSProperties
-      }
+      className={`mp-chart-panel ${large ? "mp-chart-large" : ""} ${loading ? "is-loading" : ""}`}
+      style={{ "--chart-tone": spec.series[0]?.color || palette[0] } as React.CSSProperties}
     >
       <header className="mp-chart-heading">
         <div>
           <i />
           <h3>{spec.title}</h3>
-          <span>{spec.rate ? "B/s" : spec.unit}</span>
+          {spec.unit && <span>{spec.unit}</span>}
         </div>
-        <div>
-          {loading && (
-            <Spinner size="sm" aria-label={words(l, "加载中", "Loading")} />
-          )}
-          {onExpand && (
-            <Button
-              isIconOnly
-              size="sm"
-              variant="light"
-              aria-label={words(l, `放大${spec.title}`, `Expand ${spec.title}`)}
-              onPress={onExpand}
-            >
-              <Maximize2 size={14} />
-            </Button>
-          )}
-        </div>
+        {onExpand && (
+          <button
+            type="button"
+            className="mp-icon-button"
+            aria-label={words(l, `放大${spec.title}`, `Expand ${spec.title}`)}
+            onClick={() => onExpand(spec)}
+          >
+            <Maximize2 size={14} />
+          </button>
+        )}
       </header>
-      <div className="mp-chart-legend">
-        {spec.series.map((s) => (
-          <span key={s.key}>
-            <i style={{ background: s.color }} />
-            {s.name}
-          </span>
-        ))}
-      </div>
+      {spec.series.length > 1 && (
+        <div className="mp-chart-legend">
+          {spec.series.map((s) => (
+            <span key={s.key}>
+              <i style={{ background: s.color }} />
+              {s.name}
+            </span>
+          ))}
+        </div>
+      )}
       <div className="mp-chart-canvas" aria-label={spec.title}>
         {hasData ? (
-          <ResponsiveContainer width="100%" height="100%">
-            <ComposedChart
-              data={points}
-              margin={{
-                top: 10,
-                right: 15,
-                bottom: 1,
-                left: spec.rate ? 8 : 0,
-              }}
-            >
-              <defs>
-                {spec.series.map((s, i) => (
-                  <linearGradient
-                    key={s.key}
-                    id={`${unique}-${i}`}
-                    x1="0"
-                    y1="0"
-                    x2="0"
-                    y2="1"
-                  >
-                    <stop offset="0%" stopColor={s.color} stopOpacity={0.17} />
-                    <stop
-                      offset="100%"
-                      stopColor={s.color}
-                      stopOpacity={0.005}
-                    />
-                  </linearGradient>
-                ))}
-              </defs>
-              <CartesianGrid
-                vertical={false}
-                stroke="var(--line)"
-                strokeDasharray="3 4"
-                strokeOpacity={0.65}
-              />
-              <XAxis
-                type="number"
-                dataKey="ts"
-                domain={["dataMin", "dataMax"]}
-                tickFormatter={shortTime}
-                axisLine={false}
-                tickLine={false}
-                tick={{ fill: "var(--muted)", fontSize: 10 }}
-                minTickGap={36}
-                tickMargin={12}
-              />
-              <YAxis
-                domain={spec.percent ? [0, 100] : [0, "auto"]}
-                tickFormatter={(v) => tickValue(v, spec.rate)}
-                axisLine={false}
-                tickLine={false}
-                tick={{ fill: "var(--muted)", fontSize: 10 }}
-                width={spec.rate ? 70 : 44}
-                tickCount={5}
-                allowDecimals={
-                  !spec.percent &&
-                  !["connections", "processes"].includes(spec.id)
-                }
-              />
-              <Tooltip
-                content={({ active, payload, label }) =>
-                  active && payload?.length ? (
-                    <div className="mp-chart-tooltip">
-                      <small>
-                        {new Date(Number(label) * 1000).toLocaleString(
-                          l === "zh" ? "zh-CN" : "en-US",
-                        )}
-                      </small>
-                      {payload
-                        .filter(
-                          (p) => p.value !== null && p.value !== undefined,
-                        )
-                        .map((p) => (
-                          <div key={String(p.dataKey)}>
-                            <i style={{ background: p.color }} />
-                            <span>{p.name}</span>
-                            <strong>
-                              {spec.rate
-                                ? bytes(Number(p.value), true)
-                                : `${Number(p.value).toFixed(spec.percent || spec.id === "latency" || spec.id === "carriers" || spec.id === "load" ? 1 : 0)}${spec.unit === "%" ? "%" : spec.unit ? ` ${spec.unit}` : ""}`}
-                            </strong>
-                          </div>
-                        ))}
-                    </div>
-                  ) : null
-                }
-                cursor={{ stroke: "var(--muted)", strokeDasharray: "3 3" }}
-              />
-              {spec.series.map((s, i) =>
-                spec.series.length === 1 ? (
-                  <Area
-                    key={s.key}
-                    type="linear"
-                    dataKey={s.key}
-                    name={s.name}
-                    stroke={s.color}
-                    strokeWidth={1.8}
-                    fill={`url(#${unique}-${i})`}
-                    dot={points.length < 3 ? { r: 3, strokeWidth: 0 } : false}
-                    activeDot={{
-                      r: 4,
-                      strokeWidth: 2,
-                      stroke: "var(--surface)",
-                    }}
-                    connectNulls={false}
-                    isAnimationActive={false}
-                  />
-                ) : (
-                  <Line
-                    key={s.key}
-                    type="linear"
-                    dataKey={s.key}
-                    name={s.name}
-                    stroke={s.color}
-                    strokeWidth={1.8}
-                    dot={points.length < 3 ? { r: 3, strokeWidth: 0 } : false}
-                    activeDot={{
-                      r: 4,
-                      strokeWidth: 2,
-                      stroke: "var(--surface)",
-                    }}
-                    connectNulls={false}
-                    isAnimationActive={false}
-                  />
-                ),
-              )}
-            </ComposedChart>
-          </ResponsiveContainer>
+          <LineChart
+            series={spec.series}
+            points={points}
+            domain={domain}
+            percent={spec.percent}
+            binary={spec.rate}
+            area={spec.series.length === 1}
+            revealKey={range}
+            {...formatters}
+          />
+        ) : loading ? (
+          <div className="mp-chart-skeleton" role="status" aria-label={words(l, "正在加载历史记录", "Loading history")} />
         ) : (
           <div className="mp-chart-empty">
-            {loading ? (
-              <Spinner size="sm" />
-            ) : (
-              <ChartNoAxesCombined size={25} />
-            )}
-            <span>
-              {words(
-                l,
-                loading ? "正在加载历史记录" : "所选时段暂无数据",
-                loading ? "Loading history" : "No data in this period",
-              )}
-            </span>
+            <ChartNoAxesCombined size={24} />
+            <span>{words(l, "所选时段暂无数据", "No data in this period")}</span>
           </div>
         )}
       </div>
     </section>
   );
-}
+});

@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
-/// 会话持久化并绑定来源 IP；退出、改密或来源 IP 变化时失效。
+/// 会话持久化并绑定登录时的网络；退出或改密时失效。
 
 /// 同一 IP 连续失败多少次后锁定，以及锁定时长。
 const MAX_FAILURES: u32 = 5;
@@ -80,25 +80,72 @@ impl SecurityManager {
     }
 }
 
-/// 管理员会话表。
-///
-/// 之前这里只有一个 `Arc<Mutex<Option<String>>>` 单槽，既无法区分多个浏览器，
-/// 也从来没被任何接口校验过。改成 token -> 过期时间 的映射后，
-/// 每个登录会话独立、可单独吊销，且由中间件统一强制校验。
+/// How strictly a session is tied to the address it signed in from
+/// (`AEGIS_SESSION_IP_BINDING`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum IpBinding {
+    /// Exactly the sign-in address.
+    Strict,
+    /// The sign-in network: IPv4 /24 or IPv6 /64. DHCP renewals and IPv6
+    /// privacy addresses can rotate inside it. Other networks are refused.
+    Network,
+    /// Any address. For clients that alternate between IPv4 and IPv6.
+    Off,
+}
+
+impl IpBinding {
+    pub fn from_env() -> Self {
+        match std::env::var("AEGIS_SESSION_IP_BINDING").unwrap_or_default().trim().to_ascii_lowercase().as_str() {
+            "strict" => Self::Strict,
+            "off" | "none" | "0" | "false" => Self::Off,
+            _ => Self::Network,
+        }
+    }
+
+    fn accepts(self, bound: &str, current: &str) -> bool {
+        match self {
+            Self::Off => true,
+            Self::Strict => bound == current,
+            Self::Network => bound == current || same_network(bound, current),
+        }
+    }
+}
+
+fn same_network(a: &str, b: &str) -> bool {
+    use std::net::IpAddr;
+    let (Ok(a), Ok(b)) = (a.parse::<IpAddr>(), b.parse::<IpAddr>()) else {
+        return false;
+    };
+    match (a.to_canonical(), b.to_canonical()) {
+        (IpAddr::V4(a), IpAddr::V4(b)) => a.octets()[..3] == b.octets()[..3],
+        (IpAddr::V6(a), IpAddr::V6(b)) => a.segments()[..4] == b.segments()[..4],
+        _ => false,
+    }
+}
+
 #[derive(Clone)]
+/// Persistent, independently revocable administrator sessions.
 pub struct SessionStore {
     db: Arc<Mutex<Connection>>,
+    binding: IpBinding,
+    // (token hash, address) pairs already written to the audit log, so a stale
+    // tab retrying from another network does not flood it.
+    reported: Arc<Mutex<HashMap<(String, String), Instant>>>,
 }
 
 impl SessionStore {
     pub fn new(db: Arc<Mutex<Connection>>) -> Self {
+        Self::with_binding(db, IpBinding::from_env())
+    }
+
+    pub fn with_binding(db: Arc<Mutex<Connection>>, binding: IpBinding) -> Self {
         // Convert legacy permanent sessions without signing out active devices.
         let now = unix_now();
         let _ = db.lock().unwrap().execute(
             "UPDATE admin_sessions SET expires_at = ?1 WHERE expires_at = ?2",
             rusqlite::params![now + SESSION_TTL, i64::MAX],
         );
-        Self { db }
+        Self { db, binding, reported: Arc::new(Mutex::new(HashMap::new())) }
     }
 
     /// 签发一个新会话令牌，顺带清理已过期的旧令牌防止内存无限增长。
@@ -137,7 +184,20 @@ impl SessionStore {
             )
             .ok();
         match found {
-            Some((ip, exp)) if exp > now && ip == source_ip => {
+            Some((_, exp)) if exp <= now => {
+                let _ = conn.execute(
+                    "DELETE FROM admin_sessions WHERE token_hash = ?1",
+                    [token_hash(token)],
+                );
+                false
+            }
+            // A different network is refused but the session survives, so the
+            // device that signed in keeps working when it returns.
+            Some((bound, _)) if !self.binding.accepts(&bound, source_ip) => {
+                self.report_rejection(&conn, token, &bound, source_ip);
+                false
+            }
+            Some((_, exp)) => {
                 if exp - now < SESSION_TTL - SESSION_REFRESH_WINDOW {
                     let _ = conn.execute(
                         "UPDATE admin_sessions SET expires_at = ?1 WHERE token_hash = ?2",
@@ -146,15 +206,22 @@ impl SessionStore {
                 }
                 true
             }
-            Some(_) => {
-                let _ = conn.execute(
-                    "DELETE FROM admin_sessions WHERE token_hash = ?1",
-                    [token_hash(token)],
-                );
-                false
-            }
             None => false,
         }
+    }
+
+    fn report_rejection(&self, conn: &Connection, token: &str, bound: &str, source_ip: &str) {
+        let mut reported = self.reported.lock().unwrap();
+        reported.retain(|_, at| at.elapsed() < Duration::from_secs(3600));
+        let key = (token_hash(token), source_ip.to_string());
+        if reported.contains_key(&key) || reported.len() >= 1024 {
+            return;
+        }
+        reported.insert(key, Instant::now());
+        let _ = conn.execute(
+            "INSERT INTO audit_logs (action, ip) VALUES (?1, ?2)",
+            rusqlite::params![format!("拒绝来自其他网络的管理会话（登录网络 {bound}）"), source_ip],
+        );
     }
 
     pub fn revoke(&self, token: &str) {
@@ -240,17 +307,71 @@ fn generate_token() -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::SessionStore;
+    use super::{IpBinding, SessionStore};
 
     #[test]
-    fn session_survives_store_recreation_but_is_bound_to_ip() {
+    fn session_survives_store_recreation_but_is_bound_to_network() {
         let db = crate::db::init_db(":memory:").expect("test database");
-        let first = SessionStore::new(db.clone());
+        let first = SessionStore::with_binding(db.clone(), IpBinding::Network);
         let token = first.issue("192.0.2.10").unwrap();
-        let restarted = SessionStore::new(db);
+        let restarted = SessionStore::with_binding(db, IpBinding::Network);
 
         assert!(restarted.verify(&token, "192.0.2.10"));
-        assert!(!restarted.verify(&token, "192.0.2.11"));
+        assert!(restarted.verify(&token, "192.0.2.77"), "same /24 is the same network");
+        assert!(!restarted.verify(&token, "198.51.100.10"));
+        assert!(restarted.verify(&token, "192.0.2.10"), "a refused network must not revoke the session");
+        assert!(!restarted.verify(&token, "2001:db8::1"), "address family changes are a different network");
+    }
+
+    #[test]
+    fn binding_modes_match_their_documented_scope() {
+        assert!(IpBinding::Network.accepts("2001:db8:1:2::a", "2001:db8:1:2:ffff::9"));
+        assert!(!IpBinding::Network.accepts("2001:db8:1:2::a", "2001:db8:1:3::a"));
+        assert!(IpBinding::Network.accepts("::ffff:192.0.2.1", "192.0.2.200"));
+        assert!(!IpBinding::Strict.accepts("192.0.2.10", "192.0.2.11"));
+        assert!(IpBinding::Off.accepts("192.0.2.10", "2001:db8::1"));
+        assert!(!IpBinding::Network.accepts("unknown", "192.0.2.1"));
+    }
+
+    #[test]
+    fn rejected_networks_are_audited_once() {
+        let db = crate::db::init_db(":memory:").unwrap();
+        let sessions = SessionStore::with_binding(db.clone(), IpBinding::Network);
+        let token = sessions.issue("192.0.2.10").unwrap();
+        for _ in 0..3 {
+            assert!(!sessions.verify(&token, "203.0.113.5"));
+        }
+        let count: i64 = db
+            .lock()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM audit_logs WHERE ip = '203.0.113.5'", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn network_changes_do_not_extend_expiry_or_bypass_revocation() {
+        let db = crate::db::init_db(":memory:").unwrap();
+        let sessions = SessionStore::with_binding(db.clone(), IpBinding::Network);
+        let token = sessions.issue("192.0.2.10").unwrap();
+        let expires = super::unix_now() + 60;
+        db.lock().unwrap().execute(
+            "UPDATE admin_sessions SET expires_at=?1", [expires],
+        ).unwrap();
+        assert!(!sessions.verify(&token, "198.51.100.10"));
+        let stored: i64 = db.lock().unwrap().query_row(
+            "SELECT expires_at FROM admin_sessions", [], |r| r.get(0),
+        ).unwrap();
+        assert_eq!(stored, expires);
+        assert!(sessions.verify(&token, "192.0.2.11"));
+        sessions.revoke(&token);
+        assert!(!sessions.verify(&token, "192.0.2.10"));
+        assert!(!sessions.verify(&token, "192.0.2.11"));
+
+        let token = sessions.issue("2001:db8:1:2::1").unwrap();
+        assert!(sessions.verify(&token, "2001:db8:1:2::ffff"));
+        sessions.revoke_all();
+        assert!(!sessions.verify(&token, "2001:db8:1:2::1"));
     }
 
     #[test]

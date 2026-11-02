@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { API, type ServerNode } from "../lib";
 import { latency, number, ratio } from "./format";
 
@@ -65,6 +65,9 @@ export function withGaps(points: ChartPoint[], maxGap: number): ChartPoint[] {
 
 export function useNodeHistory(node: ServerNode, range: HistoryRange) {
   const [history, setHistory] = useState<ChartPoint[]>([]);
+  // The range the current history belongs to. Charts keep showing it until the
+  // newly selected range has loaded, then reveal the new data once.
+  const [loadedRange, setLoadedRange] = useState<HistoryRange | null>(null);
   const [samples, setSamples] = useState<ChartPoint[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(false);
@@ -86,6 +89,7 @@ export function useNodeHistory(node: ServerNode, range: HistoryRange) {
               .filter((p) => number(p.ts) !== null)
               .map(toChartPoint),
           );
+          setLoadedRange(range);
           setError(false);
         }
       } catch {
@@ -103,8 +107,10 @@ export function useNodeHistory(node: ServerNode, range: HistoryRange) {
       clearTimeout(timer);
     };
   }, [node.id, range, revision]);
+  // Live samples only extend the 1-hour view; throttling them keeps the charts
+  // from re-rendering on every one-second heartbeat.
   useEffect(() => {
-    if (node.status !== "online" || !node.last_seen) return;
+    if (range !== "1h" || node.status !== "online" || !node.last_seen) return;
     const ts = Math.floor(node.last_seen / 1000);
     const point = toChartPoint({
       ts,
@@ -125,25 +131,28 @@ export function useNodeHistory(node: ServerNode, range: HistoryRange) {
       lat_cu: node.latency_cu,
       lat_cm: node.latency_cm,
     });
-    setSamples((previous) =>
-      previous.some((p) => p.ts === ts)
-        ? previous
-        : [...previous, point]
-            .filter((p) => p.ts >= Date.now() / 1000 - 3600)
-            .slice(-720),
-    );
-  }, [node]);
-  const points = useMemo(() => {
-    const { hours, bucket } = ranges[range];
+    setSamples((previous) => {
+      const last = previous[previous.length - 1];
+      if (last && ts - last.ts < 5) return previous;
+      return [...previous, point]
+        .filter((p) => p.ts >= Date.now() / 1000 - 3600)
+        .slice(-720);
+    });
+  }, [node, range]);
+  const shown = loadedRange ?? range;
+  const { points, domain } = useMemo(() => {
+    const { hours, bucket } = ranges[shown];
     const latest = history[history.length - 1]?.ts || 0;
-    const start = Date.now() / 1000 - hours * 3600;
-    const live = samples.filter((p) => p.ts > latest && p.ts >= start);
-    return withGaps(
-      [...history.filter((p) => p.ts >= start), ...live],
-      bucket * 2.5,
-    );
-  }, [history, samples, range]);
-  return { points, loading, error, reload: () => setRevision((n) => n + 1) };
+    const end = Math.max(latest, Math.floor(Date.now() / 1000));
+    const start = end - hours * 3600;
+    const live = shown === "1h" ? samples.filter((p) => p.ts > latest && p.ts >= start) : [];
+    return {
+      points: withGaps([...history.filter((p) => p.ts >= start), ...live], bucket * 2.5),
+      domain: [start, end] as [number, number],
+    };
+  }, [history, samples, shown]);
+  const reload = useCallback(() => setRevision((n) => n + 1), []);
+  return { points, domain, shownRange: shown, loading, error, reload };
 }
 
 export function useTargetHistory(

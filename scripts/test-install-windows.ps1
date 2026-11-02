@@ -113,6 +113,11 @@ try {
     Assert ((Get-Content -LiteralPath "$script:TestRoot\web\themes\custom\index.html" -Raw) -eq 'custom theme') 'Update must preserve themes'
     Assert ((Get-Content -LiteralPath "$script:TestRoot\moniter.json" -Raw | ConvertFrom-Json).AEGIS_PUBLIC_URL -eq 'https://fixture.example') 'Update must preserve configuration'
     Assert (Test-Path -LiteralPath "$script:TestRoot\web\dist\old-chunk-Abcdef12.js") 'Update must preserve chunks requested by existing browser tabs'
+    [IO.File]::WriteAllText("$script:TestRoot\web\dist\build-manifest.json",'{"index.html":{"file":"old-chunk-Abcdef12.js"}}')
+    [IO.File]::WriteAllText("$script:TestRoot\web\dist\stale-chunk-Abcdef12.js",'stale chunk')
+    Run-Installer
+    Assert (Test-Path -LiteralPath "$script:TestRoot\web\dist\old-chunk-Abcdef12.js") 'Manifest dependencies must survive an update'
+    Assert (-not (Test-Path -LiteralPath "$script:TestRoot\web\dist\stale-chunk-Abcdef12.js")) 'Chunks outside the previous dependency graph must be pruned'
     $login = Microsoft.PowerShell.Utility\Invoke-RestMethod -Method Post -Uri "http://127.0.0.1:$script:TestPort/api/v1/admin/login" -ContentType 'application/json' -Body $loginBody
     Assert $login.success 'Update must preserve the administrator database'
     Expect-Rejection 'missing-asset'

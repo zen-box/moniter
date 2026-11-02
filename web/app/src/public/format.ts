@@ -85,6 +85,13 @@ export function price(node: ServerNode, language: Language): string {
   if (node.billing_cycle === "free") return words(language, "免费", "Free");
   return `${node.billing_currency || ""}${Number(node.billing_price || 0).toFixed(2)} / ${cycle(node.billing_cycle, language)}`;
 }
+/** Whole days until renewal; negative when overdue, null when not applicable. */
+export function renewalDays(node: ServerNode): number | null {
+  if (node.billing_cycle === "free" || node.billing_cycle === "lifetime" || !node.renewal_date) return null;
+  const target = new Date(`${node.renewal_date.slice(0, 10)}T00:00:00`).getTime();
+  if (!Number.isFinite(target)) return null;
+  return Math.round((target - new Date(new Date().toDateString()).getTime()) / 86400000);
+}
 export function renewal(node: ServerNode, language: Language): string {
   if (node.billing_cycle === "free") return words(language, "免费", "Free");
   if (node.billing_cycle === "lifetime")
@@ -114,20 +121,28 @@ export function averageLatency(node: ServerNode): number | null {
     ? values.reduce((sum, v) => sum + v, 0) / values.length
     : null;
 }
+// Intl.DisplayNames is expensive to construct; cards ask for it on every render.
+const regionNames = new Map<Language, Intl.DisplayNames | null>();
+function regionNamesFor(language: Language) {
+  if (!regionNames.has(language)) {
+    try {
+      regionNames.set(language, new Intl.DisplayNames([language === "zh" ? "zh-CN" : "en"], { type: "region" }));
+    } catch {
+      regionNames.set(language, null);
+    }
+  }
+  return regionNames.get(language) ?? null;
+}
 export function countryName(code: string, language: Language): string {
-  try { return new Intl.DisplayNames([language === "zh" ? "zh-CN" : "en"],{type:"region"}).of(code.toUpperCase()) || code; }
-  catch { return code || "—"; }
+  try {
+    return (code && regionNamesFor(language)?.of(code.toUpperCase())) || code || "—";
+  } catch {
+    return code || "—";
+  }
 }
 export function regionName(node: ServerNode, language: Language): string {
   if (language === "en" && node.region_name_en) return node.region_name_en;
   if (language === "zh" && node.region_name) return node.region_name;
-  try {
-    return (
-      new Intl.DisplayNames(language === "zh" ? ["zh-CN"] : ["en"], {
-        type: "region",
-      }).of(node.region.toUpperCase()) || node.region
-    );
-  } catch {
-    return node.region_name || node.region || "—";
-  }
+  const name = countryName(node.region, language);
+  return name === "—" ? node.region_name || node.region || "—" : name;
 }

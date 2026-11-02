@@ -43,6 +43,27 @@ else: sys.exit('Unexpected mock command: '+name)
 '''
 
 
+class FrontendRetentionTest(unittest.TestCase):
+    def test_update_keeps_only_the_previous_manifest_dependencies(self):
+        installer = (REPO / 'install.sh').read_text(encoding='utf-8')
+        marker = 'python3 - "$ROOT/web/dist" "$STAGING/package/web/dist" <<\'PY\'\n'
+        code = installer.split(marker, 1)[1].split('\nPY', 1)[0]
+        with tempfile.TemporaryDirectory() as directory:
+            source, target = Path(directory) / 'source', Path(directory) / 'target'
+            source.mkdir(); target.mkdir()
+            for name in ('app-Abcdef12.js', 'lazy-Abcdef12.js', 'app-Abcdef12.css', 'stale-Abcdef12.js'):
+                (source / name).write_text('previous')
+            (target / 'app-Abcdef12.js').write_text('already present')
+            (source / 'build-manifest.json').write_text(json.dumps({
+                'index.html': {'file': 'app-Abcdef12.js', 'css': ['app-Abcdef12.css']},
+                'detail': {'file': 'lazy-Abcdef12.js'},
+            }))
+            result = subprocess.run([sys.executable, '-c', code, str(source), str(target)], capture_output=True, text=True)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual({path.name for path in target.iterdir()}, {'app-Abcdef12.js', 'lazy-Abcdef12.js', 'app-Abcdef12.css'})
+            self.assertEqual((target / 'app-Abcdef12.js').read_text(), 'already present')
+
+
 @unittest.skipUnless(sys.platform.startswith('linux'), 'Linux installer requires Linux')
 class InstallerTest(unittest.TestCase):
     def test_install_update_rejection_and_rollback(self):
@@ -92,6 +113,13 @@ class InstallerTest(unittest.TestCase):
             self.assertIn('https://fixture.example',(root/'moniter.env').read_text())
             self.assertEqual((root/'data/probe.db').read_text(),'database fixture')
             self.assertTrue((root/'web/dist/old-chunk-Abcdef12.js').is_file())
+            # New builds retain only the previous manifest's graph, not every
+            # chunk inherited from older installations.
+            (root/'web/dist/build-manifest.json').write_text(json.dumps({'index.html':{'file':'old-chunk-Abcdef12.js'}}))
+            (root/'web/dist/stale-chunk-Abcdef12.js').write_text('stale chunk')
+            run('update',wrapper=True)
+            self.assertTrue((root/'web/dist/old-chunk-Abcdef12.js').is_file())
+            self.assertFalse((root/'web/dist/stale-chunk-Abcdef12.js').exists())
             for tag,assets in [('agent-v0.1.0',True),('v0.1.0',False)]:
                 metadata(tag,assets); stops=(state/'stops').read_text()
                 run('update',success=False)

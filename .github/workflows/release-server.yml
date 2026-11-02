@@ -37,7 +37,8 @@ jobs:
         working-directory: web/app
         run: |
           npm ci
-          npm run build
+          npm run test:build
+          npm run build:release
       - uses: actions/upload-artifact@v7.0.2
         with:
           name: frontend

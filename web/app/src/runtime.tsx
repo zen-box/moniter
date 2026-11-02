@@ -1,4 +1,4 @@
-import React,{createContext,useContext,useEffect,useMemo,useState} from "react";
+import React,{createContext,useContext,useEffect,useLayoutEffect,useMemo,useState} from "react";
 import {API,type ServerNode} from "./lib";
 export type Language = "zh" | "en";
 type BootstrapWindow = Window & {
@@ -389,7 +389,9 @@ export function useTheme() {
   const [theme, setTheme] = useState(
     localStorage.getItem("aegis_theme") || "system",
   );
-  useEffect(() => {
+  // Layout effect: a theme switch inside a view transition must be applied
+  // before the browser captures the new frame.
+  useLayoutEffect(() => {
     const media = window.matchMedia("(prefers-color-scheme: dark)");
     const applyTheme = () => {
       const dark = theme === "dark" || (theme === "system" && media.matches);

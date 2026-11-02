@@ -249,6 +249,9 @@ pub struct AppContext {
     pub live_servers: Arc<Mutex<HashMap<String, (ServerStateItem, Instant)>>>,
     pub client_tx: broadcast::Sender<String>,
     pub updates: updates::UpdateChecker,
+    /// Bumped by every administrative write. Agent connections reload their
+    /// node configuration when it moves instead of querying it per heartbeat.
+    pub config_epoch: Arc<std::sync::atomic::AtomicU64>,
 }
 
 #[tokio::main]
@@ -277,6 +280,7 @@ async fn main() {
         live_servers: Arc::new(Mutex::new(HashMap::new())),
         client_tx,
         updates: updates::UpdateChecker::from_env(),
+        config_epoch: Arc::new(std::sync::atomic::AtomicU64::new(0)),
     };
     ctx.updates.spawn();
 
@@ -730,7 +734,12 @@ async fn require_admin(State(ctx): State<AppContext>, req: Request, next: Next) 
             .into_response();
     }
 
-    next.run(req).await
+    let write = req.method() == axum::http::Method::POST;
+    let response = next.run(req).await;
+    if write {
+        ctx.config_epoch.fetch_add(1, std::sync::atomic::Ordering::Release);
+    }
+    response
 }
 
 /// 解析访客真实 IP。
@@ -1634,9 +1643,9 @@ fn list_all_servers(ctx: &AppContext) -> Vec<ServerStateItem> {
         }
     }
 
-    // 已用流量统一在服务端算（含校准基线）
+    // 在线节点的已用流量由连接实时累计；其余（含跨计费周期的离线节点）从库里读
     let conn = ctx.db.lock().unwrap();
-    for item in rows.iter_mut() {
+    for item in rows.iter_mut().filter(|item| item.status != "online") {
         item.traffic_used_bytes = traffic::read(&conn, item, now_secs() as i64);
     }
 
@@ -1721,6 +1730,31 @@ fn lookup_server_by_token(ctx: &AppContext, token: &str) -> Option<ServerStateIt
     Some(item)
 }
 
+fn update_agent_metadata(
+    ctx: &AppContext,
+    meta: &mut ServerStateItem,
+    source_ip: &str,
+    version: &str,
+) -> rusqlite::Result<()> {
+    let Ok(ip) = source_ip.parse::<std::net::IpAddr>() else { return Ok(()); };
+    let detected = if ip.is_ipv4() { &meta.detected_ipv4 } else { &meta.detected_ipv6 };
+    if detected == source_ip && (version.is_empty() || version == meta.agent_version) {
+        return Ok(());
+    }
+    let column = if ip.is_ipv4() { "detected_ipv4" } else { "detected_ipv6" };
+    ctx.db.lock().unwrap().execute(
+        &format!("UPDATE servers SET {column}=?2, agent_version=CASE WHEN ?3='' THEN agent_version ELSE ?3 END WHERE id=?1"),
+        rusqlite::params![meta.id, source_ip, version],
+    )?;
+    if ip.is_ipv4() {
+        meta.detected_ipv4 = source_ip.to_string();
+    } else {
+        meta.detected_ipv6 = source_ip.to_string();
+    }
+    if !version.is_empty() { meta.agent_version = version.to_string(); }
+    Ok(())
+}
+
 async fn handle_agent_ws(
     mut socket: WebSocket,
     ctx: AppContext,
@@ -1731,6 +1765,7 @@ async fn handle_agent_ws(
 
     // 优先用 URL 上的 token；没有就等第一帧里的 token（兼容老版 agent）
     let mut verified: Option<ServerStateItem> = None;
+    let mut config_epoch = ctx.config_epoch.load(std::sync::atomic::Ordering::Acquire);
     let connection_id = rand::random::<u64>();
     let mut owned_server: Option<String> = None;
     if let Some(t) = query_token.as_deref() {
@@ -1754,6 +1789,8 @@ async fn handle_agent_ws(
 
     // 每个连接独立记录上次落库时间，天然按节点隔离
     let mut last_persist = Instant::now() - METRICS_PERSIST_INTERVAL;
+    let mut meter = traffic::Meter::default();
+    let mut config_loaded = Instant::now();
     // 监控目标元数据缓存：60 秒刷新一次，避免每秒心跳都查库
     let mut target_meta: Vec<MonitorTarget> = Vec::new();
     let mut target_refresh = Instant::now() - Duration::from_secs(3600);
@@ -1809,31 +1846,48 @@ async fn handle_agent_ws(
             if ctx.agent_connections.lock().unwrap().get(id) != Some(&connection_id) { break; }
         }
 
-        // Revalidate every report so reset/deleted credentials cannot keep an
-        // already-established connection authenticated for another five minutes.
-        if let Some(token) = verified.as_ref().map(|item| item.token.clone()) {
-            verified = lookup_server_by_token(&ctx, &token);
-            if verified.is_none() { let _ = socket.send(Message::Close(None)).await; break; }
+        // Reload the node only after an administrative change (or every 30 s):
+        // a reset or deleted token then fails at once, and edits reach the live
+        // snapshot, without a database query on every heartbeat.
+        let epoch = ctx.config_epoch.load(std::sync::atomic::Ordering::Acquire);
+        let config_changed = epoch != config_epoch;
+        if config_changed || config_loaded.elapsed() >= Duration::from_secs(30) {
+            config_epoch = epoch;
+            config_loaded = Instant::now();
+            if let Some(token) = verified.as_ref().map(|item| item.token.clone()) {
+                let refreshed = lookup_server_by_token(&ctx, &token);
+                if refreshed.is_none() { let _ = socket.send(Message::Close(None)).await; break; }
+                if let (Some(previous), Some(next)) = (&verified, &refreshed) {
+                    if previous.traffic_base_at != next.traffic_base_at
+                        || previous.traffic_base_gb != next.traffic_base_gb
+                        || previous.traffic_reset_day != next.traffic_reset_day {
+                        meter.invalidate();
+                    }
+                }
+                // Two calibrations can have identical values and timestamps
+                // but different counter baselines. Check the stored baseline
+                // after an administrative write, rather than each heartbeat.
+                if config_changed {
+                    if let Some(next) = &refreshed {
+                        if let Err(error) = meter.reload_if_changed(&ctx.db, &next.id) {
+                            eprintln!("流量校准同步失败: {error}");
+                        }
+                    }
+                    target_refresh = Instant::now() - Duration::from_secs(3600);
+                }
+                verified = refreshed;
+            }
         }
-
-        let meta = match verified.as_ref() {
-            Some(m) => m.clone(),
-            None => continue,
-        };
 
         let agent_version = payload
             .get("agent_version")
             .and_then(|v| v.as_str())
             .unwrap_or("");
-        if let Ok(ip) = source_ip.parse::<std::net::IpAddr>() {
-            let detected = if ip.is_ipv4() { &meta.detected_ipv4 } else { &meta.detected_ipv6 };
-            if detected != &source_ip || (!agent_version.is_empty() && agent_version != meta.agent_version) {
-                let conn = ctx.db.lock().unwrap();
-                let column = if ip.is_ipv4() { "detected_ipv4" } else { "detected_ipv6" };
-                let _ = conn.execute(&format!("UPDATE servers SET {column}=?2, agent_version=CASE WHEN ?3='' THEN agent_version ELSE ?3 END WHERE id=?1"),
-                    rusqlite::params![meta.id,source_ip,agent_version]);
-            }
+        let Some(meta) = verified.as_mut() else { continue; };
+        if let Err(error) = update_agent_metadata(&ctx, meta, &source_ip, agent_version) {
+            eprintln!("节点网络信息保存失败: {error}");
         }
+        let meta = meta.clone();
 
         // 控制消息：Agent 主动请求监控目标列表。
         // 走 WebSocket 而不是让 Agent 再开一个 HTTP 客户端，省一个依赖。
@@ -2105,11 +2159,13 @@ async fn handle_agent_ws(
         if !agent_version.is_empty() {
             item.agent_version = agent_version.to_string();
         }
-        {
-            let conn = ctx.db.lock().unwrap();
-            match traffic::update(&conn, &item, now_secs() as i64) {
-                Ok(value) => item.traffic_used_bytes = value,
-                Err(error) => { eprintln!("流量累计保存失败: {error}"); item.traffic_used_bytes = traffic::read(&conn,&item,now_secs() as i64); }
+        match meter.advance(&ctx.db, &item, now_secs() as i64) {
+            Ok(value) => item.traffic_used_bytes = value,
+            Err(error) => {
+                eprintln!("流量累计保存失败: {error}");
+                item.traffic_used_bytes = meter.current(&item).unwrap_or_else(|| {
+                    traffic::read(&ctx.db.lock().unwrap(), &item, now_secs() as i64)
+                });
             }
         }
 
@@ -2201,6 +2257,14 @@ async fn handle_agent_ws(
     if let Some(id) = owned_server {
         let mut owners = ctx.agent_connections.lock().unwrap();
         if owners.get(&id) == Some(&connection_id) {
+            // Only the current owner may write usage: a replaced socket's
+            // counters are older than its successor's.
+            // A deleted node or reset token must not leave a stale usage row.
+            if verified.as_ref().is_some_and(|meta| lookup_server_by_token(&ctx, &meta.token).is_some()) {
+                if let Err(error) = meter.flush(&ctx.db, &id) {
+                    eprintln!("流量累计保存失败: {error}");
+                }
+            }
             owners.remove(&id);
             if let Some((_, last)) = ctx.live_servers.lock().unwrap().get_mut(&id) {
                 *last = Instant::now() - HEARTBEAT_TIMEOUT - Duration::from_millis(1);
@@ -2408,9 +2472,11 @@ fn bearer_token(headers: &HeaderMap) -> Option<String> {
         .map(|s| s.trim().to_string())
 }
 
-async fn api_admin_status() -> Json<serde_json::Value> {
-    // 能走到这里说明中间件已经校验过令牌
-    Json(serde_json::json!({ "logged_in": true }))
+async fn api_admin_status(State(ctx): State<AppContext>) -> Result<Json<serde_json::Value>, StatusCode> {
+    // Password setup state is returned only after administrator authentication.
+    let recommended = db::password_change_recommended(&ctx.db.lock().unwrap())
+        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(serde_json::json!({ "logged_in": true, "password_change_recommended": recommended })))
 }
 
 #[derive(Serialize)]
@@ -3130,6 +3196,7 @@ mod tests {
             db: db.clone(),
             history: history::HistoryReader::new(db.clone()),
             agent_connections: Arc::new(Mutex::new(HashMap::new())),
+            config_epoch: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             security: auth::SecurityManager::new(),
             sessions: auth::SessionStore::new(db.clone()),
             live_servers: Arc::new(Mutex::new(HashMap::new())),
@@ -3147,6 +3214,81 @@ mod tests {
         assert!(html.contains("&lt;/script&gt;&lt;img"));
         assert!(!html.contains("var n=\"</script>"));
         assert!(!html.contains("<img src=x onerror"));
+    }
+
+    #[test]
+    fn unchanged_agent_metadata_does_not_write_on_each_heartbeat() {
+        let ctx = context();
+        ctx.db.lock().unwrap().execute(
+            "INSERT INTO servers(id,token,name,region,region_name,provider,ipv4) VALUES('metadata','fixture-token','test','','','','203.0.113.5')", [],
+        ).unwrap();
+        let mut meta = lookup_server_by_token(&ctx, "fixture-token").unwrap();
+        update_agent_metadata(&ctx, &mut meta, "127.0.0.1", "0.1.0").unwrap();
+        let changes = ctx.db.lock().unwrap().total_changes();
+        for _ in 0..100 {
+            update_agent_metadata(&ctx, &mut meta, "127.0.0.1", "0.1.0").unwrap();
+        }
+        assert_eq!(ctx.db.lock().unwrap().total_changes(), changes);
+        assert_eq!(meta.detected_ipv4, "127.0.0.1");
+        assert_eq!(meta.ipv4, "203.0.113.5", "a detected address does not replace the manual address");
+        update_agent_metadata(&ctx, &mut meta, "127.0.0.1", "0.2.0").unwrap();
+        assert_eq!(ctx.db.lock().unwrap().total_changes(), changes + 1);
+        assert_eq!(meta.agent_version, "0.2.0");
+        update_agent_metadata(&ctx, &mut meta, "::1", "").unwrap();
+        update_agent_metadata(&ctx, &mut meta, "::1", "").unwrap();
+        assert_eq!(ctx.db.lock().unwrap().total_changes(), changes + 2);
+        assert_eq!(lookup_server_by_token(&ctx, "fixture-token").unwrap().agent_version, "0.2.0");
+    }
+
+    #[tokio::test]
+    async fn password_reminder_clears_only_after_a_completed_password_change() {
+        let ctx = context();
+        let old = "Fixture-initial-password-42!";
+        let new = "Fixture-updated-password-73!";
+        ctx.db.lock().unwrap().execute(
+            "UPDATE admin SET password_hash=?1 WHERE id=1", [auth::hash_password(old)],
+        ).unwrap();
+        let session = ctx.sessions.issue("127.0.0.1").unwrap();
+        assert_eq!(api_admin_status(State(ctx.clone())).await.unwrap().0["password_change_recommended"], true);
+        for (current, next) in [(old, old), ("incorrect-password", new)] {
+            let result = api_admin_change_password(State(ctx.clone()), HeaderMap::new(), Json(ChangePasswordReq {
+                old_password: current.into(), new_password: next.into(),
+            })).await.0;
+            assert_eq!(result["success"], false);
+            assert!(db::password_change_recommended(&ctx.db.lock().unwrap()).unwrap());
+            assert!(ctx.sessions.verify(&session, "127.0.0.1"));
+        }
+        let result = api_admin_change_password(State(ctx.clone()), HeaderMap::new(), Json(ChangePasswordReq {
+            old_password: old.into(), new_password: new.into(),
+        })).await.0;
+        assert_eq!(result["success"], true);
+        assert_eq!(api_admin_status(State(ctx.clone())).await.unwrap().0["password_change_recommended"], false);
+        assert!(!ctx.sessions.verify(&session, "127.0.0.1"));
+        let hash: String = ctx.db.lock().unwrap().query_row("SELECT password_hash FROM admin WHERE id=1", [], |row| row.get(0)).unwrap();
+        assert!(auth::verify_password(new, &hash));
+        assert!(!auth::verify_password(old, &hash));
+    }
+
+    #[tokio::test]
+    async fn failed_password_save_preserves_the_password_reminder_and_session() {
+        let ctx = context();
+        let old = "Fixture-initial-password-42!";
+        let hash = auth::hash_password(old);
+        {
+            let conn = ctx.db.lock().unwrap();
+            conn.execute("UPDATE admin SET password_hash=?1 WHERE id=1", [&hash]).unwrap();
+            conn.execute_batch("CREATE TRIGGER reject_password_marker BEFORE UPDATE ON settings
+                WHEN NEW.key='admin_password_changed' BEGIN SELECT RAISE(ABORT,'test failure'); END;").unwrap();
+        }
+        let session = ctx.sessions.issue("127.0.0.1").unwrap();
+        let result = api_admin_change_password(State(ctx.clone()), HeaderMap::new(), Json(ChangePasswordReq {
+            old_password: old.into(), new_password: "Fixture-updated-password-73!".into(),
+        })).await.0;
+        assert_eq!(result["success"], false);
+        assert!(db::password_change_recommended(&ctx.db.lock().unwrap()).unwrap());
+        let stored: String = ctx.db.lock().unwrap().query_row("SELECT password_hash FROM admin WHERE id=1", [], |row| row.get(0)).unwrap();
+        assert_eq!(stored, hash);
+        assert!(ctx.sessions.verify(&session, "127.0.0.1"));
     }
 
     #[test]
@@ -3256,6 +3398,9 @@ async fn api_admin_change_password(
     if p.new_password.chars().count() < 8 {
         return Json(serde_json::json!({ "success": false, "message": "新密码至少 8 位" }));
     }
+    if p.new_password == p.old_password {
+        return Json(serde_json::json!({ "success": false, "message": "新密码不能与当前密码相同" }));
+    }
 
     let ip = client_ip(&headers, None);
     let current_hash: Option<String> = {
@@ -3278,16 +3423,29 @@ async fn api_admin_change_password(
     }
 
     let new_hash = auth::hash_password(&p.new_password);
-    {
-        let conn = ctx.db.lock().unwrap();
-        let _ = conn.execute(
-            "UPDATE admin SET password_hash = ?1, updated_at = CURRENT_TIMESTAMP WHERE username = 'admin'",
-            [&new_hash],
-        );
-        let _ = conn.execute(
+    let saved = (|| -> rusqlite::Result<bool> {
+        let mut conn = ctx.db.lock().unwrap();
+        let tx = conn.transaction()?;
+        let changed = tx.execute(
+            "UPDATE admin SET password_hash = ?1, updated_at = CURRENT_TIMESTAMP WHERE username = 'admin' AND password_hash=?2",
+            rusqlite::params![new_hash, current_hash],
+        )?;
+        if changed != 1 { return Ok(false); }
+        db::set_password_changed(&tx, true)?;
+        tx.execute(
             "INSERT INTO audit_logs (action, ip) VALUES ('管理员修改登录密码', ?1)",
             [&ip],
-        );
+        )?;
+        tx.commit()?;
+        Ok(true)
+    })();
+    match saved {
+        Ok(true) => {},
+        Ok(false) => return Json(serde_json::json!({ "success": false, "message": "当前密码错误" })),
+        Err(error) => {
+            eprintln!("管理员密码保存失败: {error}");
+            return Json(serde_json::json!({ "success": false, "message": "密码保存失败，请稍后重试" }));
+        }
     }
 
     // 改完密码踢掉所有会话，强制用新密码重新登录

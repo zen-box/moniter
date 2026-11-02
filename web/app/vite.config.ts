@@ -14,8 +14,9 @@ export default defineConfig({
   },
   build: {
     outDir: "../dist",
-    // Existing tabs may still import a chunk from the previous deployment.
-    emptyOutDir: false,
+    // scripts/build.mjs publishes a clean build and retains one previous
+    // dependency graph locally for tabs that still need its lazy chunks.
+    emptyOutDir: true,
     assetsDir: ".",
     rollupOptions: {
       input: "index.html",

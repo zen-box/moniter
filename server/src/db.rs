@@ -84,6 +84,35 @@ pub struct BootstrapAdminCredentials {
     pub password: String,
 }
 
+fn initialize_password_change_state(conn: &Connection) -> Result<()> {
+    // Older installations can prove a completed password change through the
+    // existing audit record. Otherwise recommend a change without resetting it.
+    conn.execute(
+        "INSERT OR IGNORE INTO settings(key,value)
+         SELECT 'admin_password_changed', CASE WHEN EXISTS(
+             SELECT 1 FROM audit_logs WHERE action='管理员修改登录密码'
+         ) THEN '1' ELSE '0' END",
+        [],
+    )?;
+    Ok(())
+}
+
+pub fn set_password_changed(conn: &Connection, changed: bool) -> Result<()> {
+    conn.execute(
+        "INSERT INTO settings(key,value) VALUES('admin_password_changed',?1)
+         ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        [if changed { "1" } else { "0" }],
+    )?;
+    Ok(())
+}
+
+pub fn password_change_recommended(conn: &Connection) -> Result<bool> {
+    conn.query_row(
+        "SELECT value!='1' FROM settings WHERE key='admin_password_changed'",
+        [], |row| row.get(0),
+    )
+}
+
 #[cfg(test)]
 pub fn init_db(db_path: &str) -> Result<DbPool> {
     init_db_with_bootstrap(db_path).map(|(pool, _)| pool)
@@ -452,6 +481,7 @@ pub fn init_db_with_bootstrap(
     // 首次启动创建管理员。没有外部指定密码时生成一次高强度口令，
     // 并由启动入口显示一次；后续启动绝不重复打印或重置。
     let mut bootstrap_credentials = None;
+    initialize_password_change_state(&conn)?;
     let count: i64 = conn.query_row(
         "SELECT COUNT(*) FROM admin WHERE username = 'admin'",
         [],
@@ -468,6 +498,7 @@ pub fn init_db_with_bootstrap(
             "INSERT INTO admin (id, username, password_hash, totp_secret, totp_enabled) VALUES (1, 'admin', ?1, '', 0)",
             [&hash],
         )?;
+        set_password_changed(&conn, false)?;
         let _ = conn.execute(
             "INSERT INTO audit_logs (action, ip) VALUES ('初始化管理员账号 admin', 'system')",
             [],
@@ -497,6 +528,7 @@ pub fn init_db_with_bootstrap(
                 [&new_hash],
             )?;
             conn.execute("DELETE FROM admin_sessions", [])?;
+            set_password_changed(&conn, false)?;
             bootstrap_credentials = Some(BootstrapAdminCredentials {
                 username: "admin".to_string(), password,
             });
@@ -528,8 +560,29 @@ pub fn init_db_with_bootstrap(
 
 #[cfg(test)]
 mod tests {
-    use super::default_monitor_targets;
+    use super::{default_monitor_targets, initialize_password_change_state, password_change_recommended, set_password_changed};
     use std::collections::HashSet;
+
+    #[test]
+    fn password_reminder_migrates_audit_history_and_preserves_saved_state() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch("CREATE TABLE settings(key TEXT PRIMARY KEY,value TEXT NOT NULL);
+            CREATE TABLE audit_logs(action TEXT NOT NULL);").unwrap();
+        initialize_password_change_state(&conn).unwrap();
+        assert!(password_change_recommended(&conn).unwrap());
+        set_password_changed(&conn, true).unwrap();
+        initialize_password_change_state(&conn).unwrap();
+        assert!(!password_change_recommended(&conn).unwrap());
+        conn.execute("DELETE FROM settings", []).unwrap();
+        conn.execute("INSERT INTO audit_logs(action) VALUES('管理员修改登录密码')", []).unwrap();
+        initialize_password_change_state(&conn).unwrap();
+        assert!(!password_change_recommended(&conn).unwrap());
+        // A subsequently rotated initial password still needs changing even
+        // when a previous password change exists in the audit history.
+        set_password_changed(&conn, false).unwrap();
+        initialize_password_change_state(&conn).unwrap();
+        assert!(password_change_recommended(&conn).unwrap());
+    }
 
     #[test]
     fn default_monitor_targets_have_93_unique_entries() {

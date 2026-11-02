@@ -1,17 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
-import {
-  Button,
-  Chip,
-  Input,
-  Modal,
-  ModalBody,
-  ModalContent,
-  ModalHeader,
-  Select,
-  SelectItem,
-  Tab,
-  Tabs,
-} from "@heroui/react";
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import {
   ArrowDown,
   ArrowLeft,
@@ -21,10 +8,10 @@ import {
   ChevronRight,
   Copy,
   Cpu,
+  Gauge,
   Globe2,
   HardDrive,
   Network,
-  Search,
   Server,
   Wallet,
   Wifi,
@@ -45,44 +32,22 @@ import {
   type Language,
 } from "./format";
 import { MetricChart, metricSpecs, palette, type ChartSpec } from "./charts";
-import {
-  ranges,
-  useNodeHistory,
-  useTargetHistory,
-  withGaps,
-  type ChartPoint,
-  type HistoryRange,
-  type TargetHistory,
-} from "./useNodeHistory";
+import { ranges, useNodeHistory, useTargetHistory, withGaps, type ChartPoint, type HistoryRange, type TargetHistory } from "./useNodeHistory";
+import { RingGauge } from "./Gauge";
+import { AnimatedNumber } from "./motion";
+import { Dialog, SearchField, Segmented, Tabs, Tag } from "./ui";
 
 type Props = { node: ServerNode; language: Language; onBack: () => void };
-function Info({
-  label,
-  value,
-  title,
-}: {
-  label: string;
-  value: React.ReactNode;
-  title?: string;
-}) {
+
+function Info({ label, value, title }: { label: string; value: ReactNode; title?: string }) {
   return (
     <div className="mp-info-row">
       <dt>{label}</dt>
-      <dd title={title}>
-        {value === null || value === undefined || value === "" ? "—" : value}
-      </dd>
+      <dd title={title}>{value === null || value === undefined || value === "" ? "—" : value}</dd>
     </div>
   );
 }
-function InfoGroup({
-  title,
-  icon,
-  children,
-}: {
-  title: string;
-  icon: React.ReactNode;
-  children: React.ReactNode;
-}) {
+function InfoGroup({ title, icon, children }: { title: string; icon: ReactNode; children: ReactNode }) {
   return (
     <section className="mp-info-group">
       <h2>
@@ -94,106 +59,146 @@ function InfoGroup({
   );
 }
 
+const formatRate = (value: number) => bytes(value, true);
+const formatWhole = (value: number) => Math.round(value).toLocaleString();
+const formatLoad = (value: number) => value.toFixed(2);
+
+function rangeLabels(l: Language): Record<HistoryRange, string> {
+  return {
+    "1h": words(l, "1 小时", "1h"),
+    "6h": words(l, "6 小时", "6h"),
+    "24h": words(l, "24 小时", "24h"),
+    "7d": words(l, "7 天", "7d"),
+    "30d": words(l, "30 天", "30d"),
+  };
+}
+
+/** Live panel: re-renders each heartbeat, but only gauges and numbers move. */
+const LivePanel = memo(function LivePanel({ node: n, language: l }: { node: ServerNode; language: Language }) {
+  const online = n.status === "online";
+  const windows = /windows/i.test(n.os_name || "");
+  const live = (v: unknown) => (online ? number(v) : null);
+  const swap = online && n.swap_total_mb ? ratio(n.swap_used_mb, n.swap_total_mb) : null;
+  const mem = (mb?: number) => bytes(mb ? mb * 1024 ** 2 : null);
+  return (
+    <section className="mp-live-panel" aria-label={words(l, "实时状态", "Live status")}>
+      <div className="mp-live-gauges">
+        <RingGauge size={92} stroke={8} value={live(n.current_cpu)} label="CPU"
+          caption={online && n.cpu_cores ? `${n.cpu_cores} ${words(l, "核", "cores")}` : "—"} />
+        <RingGauge size={92} stroke={8} value={online ? ratio(n.mem_used_mb, n.mem_total_mb) : null} label={words(l, "内存", "Memory")}
+          caption={online && n.mem_total_mb ? `${mem(n.mem_used_mb)} / ${mem(n.mem_total_mb)}` : "—"} />
+        <RingGauge size={92} stroke={8} value={online ? ratio(n.disk_used_bytes, n.disk_total_bytes) : null} label={words(l, "磁盘", "Disk")} warn={80} crit={92}
+          caption={online && n.disk_total_bytes ? `${bytes(n.disk_used_bytes)} / ${bytes(n.disk_total_bytes)}` : "—"} />
+        <RingGauge size={92} stroke={8} value={swap} label="Swap" warn={50} crit={80}
+          caption={online ? (n.swap_total_mb ? `${mem(n.swap_used_mb)} / ${mem(n.swap_total_mb)}` : words(l, "未配置", "Not configured")) : "—"} />
+      </div>
+      <dl className="mp-live-stats">
+        <div className="is-up">
+          <dt><ArrowUp size={13} />{words(l, "上传", "Upload")}</dt>
+          <dd>{online ? <AnimatedNumber value={(number(n.net_out_speed_kb) ?? 0) * 1024} format={formatRate} /> : "—"}</dd>
+        </div>
+        <div className="is-down">
+          <dt><ArrowDown size={13} />{words(l, "下载", "Download")}</dt>
+          <dd>{online ? <AnimatedNumber value={(number(n.net_in_speed_kb) ?? 0) * 1024} format={formatRate} /> : "—"}</dd>
+        </div>
+        <div>
+          <dt><Gauge size={13} />{words(l, "负载", "Load")}</dt>
+          <dd>{online && !windows && number(n.load1) !== null ? <AnimatedNumber value={n.load1!} format={formatLoad} /> : "—"}</dd>
+        </div>
+        <div>
+          <dt><Network size={13} />TCP / UDP</dt>
+          <dd>{online ? `${number(n.tcp_conns) ?? "—"} / ${number(n.udp_conns) ?? "—"}` : "—"}</dd>
+        </div>
+        <div>
+          <dt><Server size={13} />{words(l, "进程", "Processes")}</dt>
+          <dd>{online && number(n.processes) !== null ? <AnimatedNumber value={n.processes!} format={formatWhole} /> : "—"}</dd>
+        </div>
+        <div>
+          <dt><CalendarDays size={13} />{words(l, "运行时长", "Uptime")}</dt>
+          <dd>{online ? duration(n.uptime_secs, l) : "—"}</dd>
+        </div>
+      </dl>
+    </section>
+  );
+});
+
 export function NodeDetailPage({ node: n, language: l, onBack }: Props) {
-  const initialQuery=new URLSearchParams(location.hash.split("?")[1]||"");
-  const [tab, updateTab] = useState(initialQuery.get("tab")==="network"?"network":"performance");
-  const [range, updateRange] = useState<HistoryRange>(()=>{
-    const selected=initialQuery.get("range");if(selected && selected in ranges)return selected as HistoryRange;
-    if(n.status==="offline" && n.last_seen){const age=(Date.now()-n.last_seen)/3600000+0.2;return (Object.keys(ranges) as HistoryRange[]).find(key=>ranges[key].hours>=age)||"30d";}
+  const initialQuery = new URLSearchParams(location.hash.split("?")[1] || "");
+  const [tab, updateTab] = useState<"performance" | "network">(initialQuery.get("tab") === "network" ? "network" : "performance");
+  const [range, updateRange] = useState<HistoryRange>(() => {
+    const selected = initialQuery.get("range");
+    if (selected && selected in ranges) return selected as HistoryRange;
+    if (n.status === "offline" && n.last_seen) {
+      const age = (Date.now() - n.last_seen) / 3600000 + 0.2;
+      return (Object.keys(ranges) as HistoryRange[]).find((key) => ranges[key].hours >= age) || "30d";
+    }
     return "1h";
   });
-  const remember=(nextTab:string,nextRange:HistoryRange)=>{const query=new URLSearchParams({tab:nextTab,range:nextRange});window.history.replaceState(null,"",`#/nodes/${encodeURIComponent(n.id)}?${query}`)};
-  const setTab=(value:string)=>{updateTab(value);remember(value,range)};
-  const setRange=(value:HistoryRange)=>{updateRange(value);remember(tab,value)};
+  const remember = (nextTab: string, nextRange: HistoryRange) => {
+    const query = new URLSearchParams({ tab: nextTab, range: nextRange });
+    window.history.replaceState(window.history.state, "", `#/nodes/${encodeURIComponent(n.id)}?${query}`);
+  };
+  const setTab = (value: "performance" | "network") => {
+    updateTab(value);
+    remember(value, range);
+  };
+  const setRange = (value: HistoryRange) => {
+    updateRange(value);
+    remember(tab, value);
+  };
   const [expanded, setExpanded] = useState<ChartSpec | null>(null);
+  const closeExpanded = useCallback(() => setExpanded(null), []);
   const [copyState, setCopyState] = useState(false);
-  const [copyError,setCopyError]=useState("");
+  const [copyError, setCopyError] = useState("");
   const history = useNodeHistory(n, range);
   const online = n.status === "online";
-  const live = (v: unknown) => (online ? number(v) : null);
-  const windows=/windows/i.test(n.os_name||"");
-  const specs = metricSpecs(l).filter(spec=>spec.id!=="load"||!windows);
-  const inbound = live(n.net_in_speed_kb),
-    outbound = live(n.net_out_speed_kb);
+  const windows = /windows/i.test(n.os_name || "");
+  const specs = useMemo(() => metricSpecs(l).filter((spec) => spec.id !== "load" || !windows), [l, windows]);
   const quota = number(n.traffic_limit_gb),
     used = number(n.traffic_used_bytes);
-  const trafficPercent =
-    quota && used !== null ? (used / (quota * 1024 ** 3)) * 100 : null;
+  const trafficPercent = quota && used !== null ? (used / (quota * 1024 ** 3)) * 100 : null;
+  const labels = rangeLabels(l);
   const copyLink = async () => {
     try {
       await copyText(location.href);
       setCopyState(true);
+      setCopyError("");
       window.setTimeout(() => setCopyState(false), 1800);
     } catch {
-      setCopyState(false);setCopyError(words(l,"复制失败，请复制浏览器地址栏的链接","Copy failed. Copy the URL from the address bar."));
+      setCopyState(false);
+      setCopyError(words(l, "复制失败，请复制浏览器地址栏的链接", "Copy failed. Copy the URL from the address bar."));
     }
   };
   return (
-    <div className="mp-detail">
-      <nav
-        className="mp-breadcrumb"
-        aria-label={words(l, "当前位置", "Breadcrumb")}
-      >
-        <button onClick={onBack}>{words(l, "节点总览", "Nodes")}</button>
+    <div className="mp-detail mp-view-enter">
+      <nav className="mp-breadcrumb" aria-label={words(l, "当前位置", "Breadcrumb")}>
+        <button type="button" onClick={onBack}>{words(l, "节点总览", "Nodes")}</button>
         <ChevronRight size={12} />
         <span>{n.name}</span>
       </nav>
-      {copyError&&<p role="alert">{copyError}</p>}
       <div className="mp-detail-title">
         <div>
-          <Button
-            isIconOnly
-            variant="bordered"
-            className="mp-back"
-            aria-label={words(l, "返回节点列表", "Back to nodes")}
-            onPress={onBack}
-          >
+          <button type="button" className="mp-icon-button mp-back" aria-label={words(l, "返回节点列表", "Back to nodes")} onClick={onBack}>
             <ArrowLeft size={18} />
-          </Button>
-          <img
-            className="mp-detail-flag"
-            src={flag(n.region)}
-            alt={regionName(n, l)}
-          />
+          </button>
+          <img className="mp-detail-flag" src={flag(n.region)} alt={regionName(n, l)} />
           <div>
             <div className="mp-detail-name">
               <h1>{n.name}</h1>
-              <span
-                className={`mp-status ${online ? "is-online" : "is-offline"}`}
-              >
+              <span className={`mp-status mp-status-pill ${online ? "is-online" : "is-offline"}`}>
                 <i />
-                {words(
-                  l,
-                  online ? "在线" : "离线",
-                  online ? "Online" : "Offline",
-                )}
+                {words(l, online ? "在线" : "离线", online ? "Online" : "Offline")}
               </span>
             </div>
-            <p>
-              {[
-                regionName(n, l),
-                n.provider,
-                n.agent_version ? `Agent ${n.agent_version}` : "",
-              ]
-                .filter(Boolean)
-                .join(" · ")}
-            </p>
+            <p>{[regionName(n, l), n.provider, n.agent_version ? `Agent ${n.agent_version}` : ""].filter(Boolean).join(" · ")}</p>
           </div>
         </div>
-        <Button
-          size="sm"
-          variant="bordered"
-          className="mp-copy-link"
-          onPress={() => void copyLink()}
-          startContent={copyState ? <Check size={14} /> : <Copy size={14} />}
-        >
-          {words(
-            l,
-            copyState ? "已复制" : "复制链接",
-            copyState ? "Copied" : "Copy link",
-          )}
-        </Button>
+        <button type="button" className={`mp-button mp-copy-link ${copyState ? "is-done" : ""}`} onClick={() => void copyLink()}>
+          {copyState ? <Check size={14} /> : <Copy size={14} />}
+          <span>{words(l, copyState ? "已复制" : "复制链接", copyState ? "Copied" : "Copy link")}</span>
+        </button>
       </div>
+      {copyError && <p className="mp-inline-error" role="alert">{copyError}</p>}
       {!online && (
         <div className="mp-offline-banner">
           <span className="mp-status is-offline">
@@ -209,129 +214,36 @@ export function NodeDetailPage({ node: n, language: l, onBack }: Props) {
                 )
               : words(l, "尚无上报记录", "No report received yet")}
           </span>
-          <small>
-            {words(l, "历史图表仍可查看", "History remains available")}
-          </small>
+          <small>{words(l, "历史图表仍可查看", "History remains available")}</small>
         </div>
       )}
+      <LivePanel node={n} language={l} />
       <div className="mp-detail-summary">
-        <InfoGroup
-          title={words(l, "系统", "System")}
-          icon={<Server size={15} />}
-        >
-          <Info label={words(l, "操作系统", "OS")} value={n.os_name} />
+        <InfoGroup title={words(l, "系统", "System")} icon={<Server size={15} />}>
+          <Info label={words(l, "操作系统", "OS")} value={n.os_name} title={n.os_name} />
           <Info label={words(l, "内核", "Kernel")} value={n.kernel_ver} />
-          <Info
-            label={words(l, "架构 / 虚拟化", "Arch / virtualization")}
-            value={[n.arch, n.virtualization].filter(Boolean).join(" / ")}
-          />
-          <Info
-            label={words(l, "系统运行时长", "System uptime")}
-            value={online ? duration(n.uptime_secs, l) : "—"}
-          />
-          <Info
-            label={words(l, "最后上报", "Last report")}
-            value={dateTime(n.last_seen, l)}
-          />
+          <Info label={words(l, "架构 / 虚拟化", "Arch / virtualization")} value={[n.arch, n.virtualization].filter(Boolean).join(" / ")} />
+          <Info label={words(l, "最后上报", "Last report")} value={dateTime(n.last_seen, l)} />
         </InfoGroup>
-        <InfoGroup
-          title={words(l, "资源", "Resources")}
-          icon={<Cpu size={15} />}
-        >
-          <Info
-            label={words(l, "处理器", "Processor")}
-            value={n.cpu_model}
-            title={n.cpu_model}
-          />
-          <Info
-            label={words(l, "核心 / 使用率", "Cores / usage")}
-            value={`${n.cpu_cores || "—"} / ${percent(live(n.current_cpu))}`}
-          />
-          <Info
-            label={words(l, "内存", "Memory")}
-            value={
-              online && n.mem_total_mb
-                ? `${bytes(live(n.mem_used_mb) === null ? null : n.mem_used_mb! * 1024 ** 2)} / ${bytes(n.mem_total_mb * 1024 ** 2)}`
-                : "—"
-            }
-          />
-          <Info
-            label="Swap"
-            value={
-              online && number(n.swap_total_mb) !== null
-                ? n.swap_total_mb === 0
-                  ? words(l, "未配置", "Not configured")
-                  : `${bytes(live(n.swap_used_mb) === null ? null : n.swap_used_mb! * 1024 ** 2)} / ${bytes(n.swap_total_mb! * 1024 ** 2)}`
-                : "—"
-            }
-          />
-          <Info
-            label={words(l, "磁盘", "Disk")}
-            value={
-              online && n.disk_total_bytes
-                ? `${bytes(n.disk_used_bytes)} / ${bytes(n.disk_total_bytes)}`
-                : "—"
-            }
-          />
-          {n.gpu && <Info label="GPU" value={n.gpu} title={n.gpu} />}
+        <InfoGroup title={words(l, "硬件", "Hardware")} icon={<Cpu size={15} />}>
+          <Info label={words(l, "处理器", "Processor")} value={n.cpu_model} title={n.cpu_model} />
+          <Info label={words(l, "核心", "Cores")} value={n.cpu_cores ? String(n.cpu_cores) : null} />
+          <Info label={words(l, "内存", "Memory")} value={n.mem_total_mb ? bytes(n.mem_total_mb * 1024 ** 2) : null} />
+          {n.gpu ? <Info label="GPU" value={n.gpu} title={n.gpu} /> : <Info label={words(l, "磁盘", "Disk")} value={n.disk_total_bytes ? bytes(n.disk_total_bytes) : null} />}
         </InfoGroup>
-        <InfoGroup
-          title={words(l, "网络", "Network")}
-          icon={<Network size={15} />}
-        >
+        <InfoGroup title={words(l, "网络", "Network")} icon={<Network size={15} />}>
           <Info label="IPv4" value={n.ipv4} title={n.ipv4} />
           <Info label="IPv6" value={n.ipv6} title={n.ipv6} />
-          <Info
-            label={words(l, "上传 / 下载", "Upload / download")}
-            value={
-              <span>
-                <b className="mp-text-blue">
-                  ↑ {bytes(outbound === null ? null : outbound * 1024, true)}
-                </b>
-                <b className="mp-text-success">
-                  ↓ {bytes(inbound === null ? null : inbound * 1024, true)}
-                </b>
-              </span>
-            }
-          />
-          <Info
-            label="TCP / UDP"
-            value={
-              online
-                ? `${number(n.tcp_conns) ?? "—"} / ${number(n.udp_conns) ?? "—"}`
-                : "—"
-            }
-          />
-          <Info
-            label={words(l, "累计上传 / 下载", "Total upload / download")}
-            value={
-              online
-                ? `${bytes(n.total_tx_bytes)} / ${bytes(n.total_rx_bytes)}`
-                : "—"
-            }
-          />
+          <Info label={words(l, "累计上传", "Total upload")} value={online ? bytes(n.total_tx_bytes) : "—"} />
+          <Info label={words(l, "累计下载", "Total download")} value={online ? bytes(n.total_rx_bytes) : "—"} />
         </InfoGroup>
-        <InfoGroup
-          title={words(l, "服务与账单", "Service & billing")}
-          icon={<Wallet size={15} />}
-        >
+        <InfoGroup title={words(l, "服务与账单", "Service & billing")} icon={<Wallet size={15} />}>
           <Info label={words(l, "费用", "Price")} value={price(n, l)} />
           <Info
             label={words(l, "到期日期", "Renewal date")}
-            value={
-              n.billing_cycle === "lifetime" || n.billing_cycle === "free"
-                ? renewal(n, l)
-                : n.renewal_date?.slice(0, 10)
-            }
+            value={n.billing_cycle === "lifetime" || n.billing_cycle === "free" ? renewal(n, l) : n.renewal_date?.slice(0, 10)}
           />
-          <Info
-            label={words(l, "剩余时间", "Time remaining")}
-            value={renewal(n, l)}
-          />
-          <Info
-            label={words(l, "本期流量", "Cycle traffic")}
-            value={`${bytes(n.traffic_used_bytes)} / ${quota && quota > 0 ? bytes(quota * 1024 ** 3) : words(l, "未设限额", "No quota set")}`}
-          />
+          <Info label={words(l, "剩余时间", "Time remaining")} value={renewal(n, l)} />
           <Info
             label={words(l, "流量计费", "Traffic accounting")}
             value={`${words(l, n.traffic_type === "outbound" ? "仅出站" : "双向", n.traffic_type === "outbound" ? "Outbound" : "Both directions")} · ${words(l, `每月 ${n.traffic_reset_day || 1} 日重置`, `Resets on day ${n.traffic_reset_day || 1}`)}`}
@@ -345,105 +257,50 @@ export function NodeDetailPage({ node: n, language: l, onBack }: Props) {
             .map((t) => t.trim())
             .filter(Boolean)
             .map((t) => (
-              <Chip key={t} size="sm" variant="flat">
-                {t}
-              </Chip>
+              <Tag key={t}>{t}</Tag>
             ))}
         </div>
       )}
       <div className="mp-detail-toolbar">
         <Tabs
-          aria-label={words(l, "节点详情内容", "Node details section")}
-          selectedKey={tab}
-          onSelectionChange={(key) => setTab(String(key))}
-          variant="underlined"
-          classNames={{ tabList: "mp-main-tabs", cursor: "mp-tab-cursor" }}
-        >
-          <Tab
-            key="performance"
-            title={
-              <span className="mp-tab-label">
-                <Cpu size={15} />
-                {words(l, "性能监控", "Performance")}
-              </span>
-            }
-          />
-          <Tab
-            key="network"
-            title={
-              <span className="mp-tab-label">
-                <Wifi size={15} />
-                {words(l, "网络分析", "Network analysis")}
-              </span>
-            }
-          />
-        </Tabs>
+          label={words(l, "节点详情内容", "Node details section")}
+          value={tab}
+          onChange={setTab}
+          options={[
+            { value: "performance", label: <><Cpu size={15} />{words(l, "性能监控", "Performance")}</> },
+            { value: "network", label: <><Wifi size={15} />{words(l, "网络分析", "Network analysis")}</> },
+          ]}
+        />
         <div className="mp-range">
           <CalendarDays size={14} />
-          <div
-            role="group"
-            aria-label={words(l, "历史时间范围", "History range")}
-          >
-            {(Object.keys(ranges) as HistoryRange[]).map((key) => (
-              <Button
-                key={key}
-                size="sm"
-                variant={range === key ? "flat" : "light"}
-                aria-pressed={range === key}
-                onPress={() => setRange(key)}
-              >
-                {
-                  {
-                    "1h": words(l, "1 小时", "1h"),
-                    "6h": words(l, "6 小时", "6h"),
-                    "24h": words(l, "24 小时", "24h"),
-                    "7d": words(l, "7 天", "7d"),
-                    "30d": words(l, "30 天", "30d"),
-                  }[key]
-                }
-              </Button>
-            ))}
-          </div>
+          <Segmented
+            label={words(l, "历史时间范围", "History range")}
+            value={range}
+            onChange={setRange}
+            options={(Object.keys(ranges) as HistoryRange[]).map((key) => ({ value: key, label: labels[key] }))}
+          />
         </div>
       </div>
+      <div className={`mp-progress ${history.loading ? "is-active" : ""}`} aria-hidden="true" />
       {history.error && (
         <div className="mp-notice mp-notice-warning" role="alert">
           {words(l, "历史数据加载失败。", "Unable to load metric history.")}
-          <Button size="sm" variant="light" onPress={history.reload}>
-            {words(l, "重新加载", "Retry")}
-          </Button>
+          <button type="button" className="mp-text-button" onClick={history.reload}>{words(l, "重新加载", "Retry")}</button>
         </div>
       )}
-      {tab === "performance" ? (
-        <>
-          <div className="mp-charts-intro">
-            <span>
-              {words(
-                l,
-                "各项指标共用时间范围，可点击右上角放大。",
-                "All charts share the selected period. Expand any chart for more detail.",
-              )}
-            </span>
-            <span>
-              {history.loading
-                ? words(l, "正在更新…", "Updating…")
-                : words(
-                    l,
-                    "历史记录每分钟更新",
-                    "History refreshes every minute",
-                  )}
-            </span>
-          </div>
+      <div className="mp-tab-panel" key={tab}>
+        {tab === "performance" ? (
           <div className="mp-chart-grid">
             {specs.map((spec) => (
               <MetricChart
                 key={spec.id}
                 spec={spec}
                 points={history.points}
+                domain={history.domain}
                 language={l}
-                range={range}
-                loading={history.loading}
-                onExpand={() => setExpanded(spec)}
+                range={history.shownRange}
+                loading={history.loading && !history.points.length}
+                onExpand={setExpanded}
               />
             ))}
             <section className="mp-traffic-panel">
@@ -453,82 +310,30 @@ export function NodeDetailPage({ node: n, language: l, onBack }: Props) {
               </header>
               <strong>
                 {bytes(used)}
-                <span>
-                  {" "}
-                  /{" "}
-                  {quota && quota > 0
-                    ? bytes(quota * 1024 ** 3)
-                    : words(l, "未设置", "Not set")}
-                </span>
+                <span> / {quota && quota > 0 ? bytes(quota * 1024 ** 3) : words(l, "未设置", "Not set")}</span>
               </strong>
-              <div className="mp-meter">
-                <i
-                  style={{
-                    width: `${Math.min(100, Math.max(0, trafficPercent || 0))}%`,
-                    background:
-                      trafficPercent && trafficPercent > 90
-                        ? "#e56f8c"
-                        : "var(--mp-blue)",
-                  }}
-                />
+              <div className={`mp-bar is-large ${trafficPercent !== null && trafficPercent >= 90 ? "is-crit" : trafficPercent !== null && trafficPercent >= 75 ? "is-warn" : ""}`}>
+                <i style={{ transform: `scaleX(${Math.min(1, Math.max(0, (trafficPercent || 0) / 100))})` }} />
               </div>
               <dl>
-                <Info
-                  label={words(l, "剩余流量", "Remaining")}
-                  value={
-                    quota && used !== null
-                      ? bytes(Math.max(0, quota * 1024 ** 3 - used))
-                      : "—"
-                  }
-                />
-                <Info
-                  label={words(l, "已用比例", "Used")}
-                  value={percent(trafficPercent)}
-                />
+                <Info label={words(l, "剩余流量", "Remaining")} value={quota && used !== null ? bytes(Math.max(0, quota * 1024 ** 3 - used)) : "—"} />
+                <Info label={words(l, "已用比例", "Used")} value={percent(trafficPercent)} />
                 <Info
                   label={words(l, "统计口径", "Accounting")}
-                  value={words(
-                    l,
-                    n.traffic_type === "outbound" ? "出站流量" : "入站 + 出站",
-                    n.traffic_type === "outbound"
-                      ? "Outbound"
-                      : "Inbound + outbound",
-                  )}
+                  value={words(l, n.traffic_type === "outbound" ? "出站流量" : "入站 + 出站", n.traffic_type === "outbound" ? "Outbound" : "Inbound + outbound")}
                 />
               </dl>
             </section>
           </div>
-        </>
-      ) : (
-        <NetworkAnalysis
-          node={n}
-          language={l}
-          range={range}
-          historyPoints={history.points}
-        />
-      )}
-      <Modal
-        isOpen={!!expanded}
-        onOpenChange={(open) => !open && setExpanded(null)}
-        size="5xl"
-        scrollBehavior="inside"
-        classNames={{ base: "mp-chart-modal", backdrop: "mp-chart-backdrop" }}
-      >
-        <ModalContent>
-          <ModalHeader>{expanded?.title}</ModalHeader>
-          <ModalBody>
-            {expanded && (
-              <MetricChart
-                spec={expanded}
-                points={history.points}
-                language={l}
-                range={range}
-                large
-              />
-            )}
-          </ModalBody>
-        </ModalContent>
-      </Modal>
+        ) : (
+          <NetworkAnalysis node={n} language={l} range={range} historyPoints={history.points} historyDomain={history.domain} historyRange={history.shownRange} />
+        )}
+      </div>
+      <Dialog open={!!expanded} onClose={closeExpanded} title={expanded?.title} wide closeLabel={words(l, "关闭", "Close")}>
+        {expanded && (
+          <MetricChart spec={expanded} points={history.points} domain={history.domain} language={l} range={history.shownRange} large />
+        )}
+      </Dialog>
     </div>
   );
 }
@@ -549,12 +354,7 @@ function targetStats(targets: TargetHistory[]) {
       }
     }),
   );
-  return {
-    total,
-    timeouts,
-    average: successes ? sum / successes : null,
-    failure: total ? (timeouts / total) * 100 : null,
-  };
+  return { total, timeouts, average: successes ? sum / successes : null, failure: total ? (timeouts / total) * 100 : null };
 }
 
 function NetworkAnalysis({
@@ -562,33 +362,23 @@ function NetworkAnalysis({
   language: l,
   range,
   historyPoints,
+  historyDomain,
+  historyRange,
 }: {
   node: ServerNode;
   language: Language;
   range: HistoryRange;
   historyPoints: ChartPoint[];
+  historyDomain: [number, number];
+  historyRange: HistoryRange;
 }) {
-  const {
-    targets: historyTargets,
-    loading,
-    error,
-    reload,
-  } = useTargetHistory(n.id, range, true);
+  const { targets: historyTargets, loading, error, reload } = useTargetHistory(n.id, range, true);
   const targets = useMemo(
     () => [
-      ...historyTargets.map(target=>({...target,name:target.deleted?`${target.name} (${words(l,"已删除","removed")})`:target.name})),
+      ...historyTargets.map((target) => ({ ...target, name: target.deleted ? `${target.name} (${words(l, "已删除", "removed")})` : target.name })),
       ...(n.targets || [])
-        .filter(
-          (target) => !historyTargets.some((t) => t.target_id === target.id),
-        )
-        .map((target) => ({
-          target_id: target.id,
-          name: target.name,
-          host: target.host,
-          carrier: target.carrier,
-          region: target.region,
-          points: [],
-        })),
+        .filter((target) => !historyTargets.some((t) => t.target_id === target.id))
+        .map((target) => ({ target_id: target.id, name: target.name, host: target.host, carrier: target.carrier, region: target.region, points: [] })),
     ],
     [historyTargets, n.targets, l],
   );
@@ -597,47 +387,53 @@ function NetworkAnalysis({
   const [region, setRegion] = useState("all");
   const [hidden, setHidden] = useState<Set<number>>(new Set());
   const initializedTargets = useRef(false);
+  // Targets visible at first load are listed first; later toggles keep cards in place.
+  const [pinned, setPinned] = useState<Set<number>>(new Set());
   const [expanded, setExpanded] = useState(false);
   useEffect(() => {
     if (!historyTargets.length || initializedTargets.current) return;
     initializedTargets.current = true;
-    let selected:number[]=[];
-    try {const saved=JSON.parse(localStorage.getItem(`moniter-targets-${n.id}`)||"null");if(Array.isArray(saved))selected=saved.map(Number);}catch{}
-    if(!selected.length){
-      const sample=targets.filter(t=>/上海|广东|Shanghai|Guangdong/i.test(t.region));
-      const source=sample.length?sample:targets;
-      for(const carrier of ["ct","cu","cm","intl"]){selected.push(...source.filter(t=>t.carrier===carrier).slice(0,2).map(t=>t.target_id));}
-      if(!selected.length)selected=source.slice(0,6).map(t=>t.target_id);
+    let selected: number[] = [];
+    try {
+      const saved = JSON.parse(localStorage.getItem(`moniter-targets-${n.id}`) || "null");
+      if (Array.isArray(saved)) selected = saved.map(Number);
+    } catch {}
+    if (!selected.length) {
+      const sample = targets.filter((t) => /上海|广东|Shanghai|Guangdong/i.test(t.region));
+      const source = sample.length ? sample : targets;
+      for (const code of ["ct", "cu", "cm", "intl"]) selected.push(...source.filter((t) => t.carrier === code).slice(0, 2).map((t) => t.target_id));
+      if (!selected.length) selected = source.slice(0, 6).map((t) => t.target_id);
     }
-    setHidden(new Set(targets.filter(t=>!selected.includes(t.target_id)).map(t=>t.target_id)));
-  }, [historyTargets, targets,n.id]);
-  useEffect(()=>{if(initializedTargets.current)localStorage.setItem(`moniter-targets-${n.id}`,JSON.stringify(targets.filter(t=>!hidden.has(t.target_id)).map(t=>t.target_id)));},[hidden,n.id]);
+    setHidden(new Set(targets.filter((t) => !selected.includes(t.target_id)).map((t) => t.target_id)));
+    setPinned(new Set(selected));
+  }, [historyTargets, targets, n.id]);
+  useEffect(() => {
+    if (initializedTargets.current)
+      localStorage.setItem(`moniter-targets-${n.id}`, JSON.stringify(targets.filter((t) => !hidden.has(t.target_id)).map((t) => t.target_id)));
+  }, [hidden, n.id]); // eslint-disable-line react-hooks/exhaustive-deps
   const carriers = [...new Set(targets.map((t) => t.carrier).filter(Boolean))];
   const regions = [...new Set(targets.map((t) => t.region).filter(Boolean))];
   const carrierName = (s: string) =>
-    (
-      ({
-        ct: words(l, "电信", "China Telecom"),
-        cu: words(l, "联通", "China Unicom"),
-        cm: words(l, "移动", "China Mobile"),
-        intl: words(l, "国际", "International"),
-        other: words(l, "其他", "Other"),
-      }) as Record<string, string>
-    )[s] || s;
-  const filtered = targets.filter(
-    (t) =>
-      (carrier === "all" || t.carrier === carrier) &&
-      (region === "all" || t.region === region) &&
-      (!query.trim() ||
-        `${t.name} ${t.host} ${t.region}`
-          .toLowerCase()
-          .includes(query.trim().toLowerCase())),
-  );
+    ({
+      ct: words(l, "电信", "China Telecom"),
+      cu: words(l, "联通", "China Unicom"),
+      cm: words(l, "移动", "China Mobile"),
+      intl: words(l, "国际", "International"),
+      other: words(l, "其他", "Other"),
+    })[s] || s;
+  const needle = query.trim().toLowerCase();
+  const filtered = targets
+    .filter(
+      (t) =>
+        (carrier === "all" || t.carrier === carrier) &&
+        (region === "all" || t.region === region) &&
+        (!needle || `${t.name} ${t.host} ${t.region}`.toLowerCase().includes(needle)),
+    )
+    .sort((a, b) => Number(!pinned.has(a.target_id)) - Number(!pinned.has(b.target_id)));
   const shown = filtered.filter((t) => !hidden.has(t.target_id));
   const stats = targetStats(shown);
-  const colors = new Map(
-    targets.map((t, i) => [t.target_id, palette[i % palette.length]]),
-  );
+  const colors = useMemo(() => new Map(targets.map((t, i) => [t.target_id, palette[i % palette.length]])), [targets]);
+  const shownKey = shown.map((t) => t.target_id).join(",");
   const chart = useMemo(() => {
     const rows = new Map<number, ChartPoint>();
     shown.forEach((t) =>
@@ -654,92 +450,67 @@ function NetworkAnalysis({
       }),
     );
     return withGaps(data, ranges[range].bucket * 2.5);
-  }, [targets, query, carrier, region, hidden, range]);
-  const targetSpec: ChartSpec = {
-    id: "latency",
-    title: words(l, "监控目标延迟", "Target latency"),
-    unit: "ms",
-    series: shown.map((t) => ({
-      key: `t${t.target_id}`,
-      name: t.name,
-      color: colors.get(t.target_id)!,
-    })),
-  };
-  const carrierSpec: ChartSpec = {
-    id: "carriers",
-    title: words(l, "三网延迟趋势", "Carrier latency trends"),
-    unit: "ms",
-    series: [
-      { key: "ct", name: words(l, "电信", "China Telecom"), color: palette[0] },
-      { key: "cu", name: words(l, "联通", "China Unicom"), color: palette[1] },
-      { key: "cm", name: words(l, "移动", "China Mobile"), color: palette[2] },
-    ],
-  };
+  }, [targets, shownKey, range]); // eslint-disable-line react-hooks/exhaustive-deps
+  const domain = useMemo<[number, number]>(() => {
+    const end = Math.floor(Date.now() / 1000);
+    return [end - ranges[range].hours * 3600, end];
+  }, [historyTargets, range]); // eslint-disable-line react-hooks/exhaustive-deps
+  const targetSpec = useMemo<ChartSpec>(
+    () => ({
+      id: "latency",
+      title: words(l, "监控目标延迟", "Target latency"),
+      unit: "ms",
+      series: shown.map((t) => ({ key: `t${t.target_id}`, name: t.name, color: colors.get(t.target_id)! })),
+    }),
+    [shownKey, colors, l], // eslint-disable-line react-hooks/exhaustive-deps
+  );
+  const carrierSpec = useMemo<ChartSpec>(
+    () => ({
+      id: "carriers",
+      title: words(l, "三网延迟趋势", "Carrier latency trends"),
+      unit: "ms",
+      series: [
+        { key: "ct", name: words(l, "电信", "China Telecom"), color: palette[0] },
+        { key: "cu", name: words(l, "联通", "China Unicom"), color: palette[1] },
+        { key: "cm", name: words(l, "移动", "China Mobile"), color: palette[2] },
+      ],
+    }),
+    [l],
+  );
   const routeState = (s?: string) =>
-    (
-      ({
-        optimal: words(l, "优选", "Optimal"),
-        good: words(l, "良好", "Good"),
-        normal: words(l, "正常", "Normal"),
-        warning: words(l, "警告", "Warning"),
-        unknown: words(l, "未知", "Unknown"),
-      }) as Record<string, string>
-    )[s || ""] ||
+    ({
+      optimal: words(l, "优选", "Optimal"),
+      good: words(l, "良好", "Good"),
+      normal: words(l, "正常", "Normal"),
+      warning: words(l, "警告", "Warning"),
+      unknown: words(l, "未知", "Unknown"),
+    })[s || ""] ||
     s ||
     "—";
+  const toggle = (id: number) =>
+    setHidden((previous) => {
+      const next = new Set(previous);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
   return (
     <div className="mp-network-section">
       {!n.monitor_enabled && (
-        <div className="mp-notice">
-          {words(
-            l,
-            "该节点未启用延迟监控。已有历史记录仍可查询。",
-            "Latency monitoring is disabled for this node. Existing history remains available.",
-          )}
-        </div>
+        <div className="mp-notice">{words(l, "该节点未启用延迟监控。已有历史记录仍可查询。", "Latency monitoring is disabled for this node. Existing history remains available.")}</div>
       )}
       {error && (
         <div className="mp-notice mp-notice-warning" role="alert">
-          {words(
-            l,
-            "监控目标历史记录加载失败。",
-            "Unable to load target history.",
-          )}
-          <Button size="sm" onPress={reload}>
-            {words(l, "重试", "Retry")}
-          </Button>
+          {words(l, "监控目标历史记录加载失败。", "Unable to load target history.")}
+          <button type="button" className="mp-text-button" onClick={reload}>{words(l, "重试", "Retry")}</button>
         </div>
       )}
       <div className="mp-network-stats">
         {[
-          [
-            words(l, "显示目标", "Visible targets"),
-            `${shown.length}`,
-            words(
-              l,
-              `共 ${targets.length} 个有记录的目标`,
-              `${targets.length} targets with history`,
-            ),
-          ],
-          [
-            words(l, "平均延迟", "Average latency"),
-            stats.average === null ? "—" : `${stats.average.toFixed(1)} ms`,
-            words(l, "按成功检测次数加权", "Weighted by successful checks"),
-          ],
-          [
-            words(l, "超时比例", "Timeout rate"),
-            percent(stats.failure),
-            words(
-              l,
-              `${stats.timeouts.toLocaleString()} 次超时`,
-              `${stats.timeouts.toLocaleString()} timed out`,
-            ),
-          ],
-          [
-            words(l, "检测次数", "Checks"),
-            stats.total.toLocaleString(),
-            words(l, "当前筛选与时间范围", "Selected targets and period"),
-          ],
+          [words(l, "显示目标", "Visible targets"), `${shown.length}`, words(l, `共 ${targets.length} 个有记录的目标`, `${targets.length} targets with history`)],
+          [words(l, "平均延迟", "Average latency"), stats.average === null ? "—" : `${stats.average.toFixed(1)} ms`, words(l, "按成功检测次数加权", "Weighted by successful checks")],
+          [words(l, "超时比例", "Timeout rate"), percent(stats.failure), words(l, `${stats.timeouts.toLocaleString()} 次超时`, `${stats.timeouts.toLocaleString()} timed out`)],
+          [words(l, "检测次数", "Checks"), stats.total.toLocaleString(), words(l, "当前筛选与时间范围", "Selected targets and period")],
         ].map(([label, value, hint]) => (
           <section key={label}>
             <small>{label}</small>
@@ -752,110 +523,45 @@ function NetworkAnalysis({
         <div className="mp-network-heading">
           <div>
             <h2>{words(l, "延迟分析", "Latency analysis")}</h2>
-            <p>
-              {words(
-                l,
-                "按地区和线路筛选，点击目标可显示或隐藏曲线。",
-                "Filter by region or carrier. Click a target to toggle its chart line.",
-              )}
-            </p>
+            <p>{words(l, "按地区和线路筛选，点击目标可显示或隐藏曲线。", "Filter by region or carrier. Click a target to toggle its chart line.")}</p>
           </div>
-          <Button size="sm" variant="flat" onPress={() => setExpanded(true)}>
-            {words(l, "放大图表", "Expand chart")}
-          </Button>
+          <button type="button" className="mp-button" onClick={() => setExpanded(true)}>{words(l, "放大图表", "Expand chart")}</button>
         </div>
         <div className="mp-filters">
-          <Input
-            className="mp-search"
-            aria-label={words(l, "搜索监控目标", "Search targets")}
-            placeholder={words(
-              l,
-              "搜索目标名称或地址…",
-              "Search targets or hosts…",
-            )}
-            value={query}
-            onValueChange={setQuery}
-            startContent={<Search size={15} />}
-            isClearable
-            onClear={() => setQuery("")}
-          />
-          <Select
-            aria-label={words(l, "目标地区", "Target region")}
-            className="mp-filter-select"
-            selectedKeys={[region]}
-            disallowEmptySelection
-            onSelectionChange={(keys) =>
-              setRegion(String([...keys][0] || "all"))
-            }
-          >
-            {[
-              <SelectItem key="all">
-                {words(l, "全部地区", "All regions")}
-              </SelectItem>,
-              ...regions.map((r) => <SelectItem key={r}>{r}</SelectItem>),
-            ]}
-          </Select>
-          <Select
-            aria-label={words(l, "运营商", "Carrier")}
-            className="mp-status-select"
-            selectedKeys={[carrier]}
-            disallowEmptySelection
-            onSelectionChange={(keys) =>
-              setCarrier(String([...keys][0] || "all"))
-            }
-          >
-            {[
-              <SelectItem key="all">
-                {words(l, "全部线路", "All carriers")}
-              </SelectItem>,
-              ...carriers.map((c) => (
-                <SelectItem key={c}>{carrierName(c)}</SelectItem>
-              )),
-            ]}
-          </Select>
+          <SearchField value={query} onChange={setQuery} label={words(l, "搜索监控目标", "Search targets")} clearLabel={words(l, "清除搜索", "Clear search")}
+            placeholder={words(l, "搜索目标名称或地址", "Search targets or hosts")} />
+          {carriers.length > 1 && (
+            <Segmented
+              label={words(l, "运营商", "Carrier")}
+              value={carrier}
+              onChange={setCarrier}
+              options={[{ value: "all", label: words(l, "全部", "All") }, ...carriers.map((c) => ({ value: c, label: carrierName(c) }))]}
+            />
+          )}
+          {regions.length > 1 && (
+            <label className="mp-select">
+              <select value={region} onChange={(event) => setRegion(event.target.value)} aria-label={words(l, "目标地区", "Target region")}>
+                <option value="all">{words(l, "全部地区", "All regions")}</option>
+                {regions.map((r) => (
+                  <option key={r} value={r}>{r}</option>
+                ))}
+              </select>
+            </label>
+          )}
         </div>
         {filtered.length > 0 && (
           <>
             <div className="mp-target-actions">
-              <span>
-                {words(
-                  l,
-                  `显示 ${shown.length} / ${filtered.length} 个目标`,
-                  `${shown.length} / ${filtered.length} targets shown`,
-                )}
-              </span>
+              <span>{words(l, `显示 ${shown.length} / ${filtered.length} 个目标`, `${shown.length} / ${filtered.length} targets shown`)}</span>
               <div>
-                <Button
-                  size="sm"
-                  variant="light"
-                  onPress={() =>
-                    setHidden(
-                      (previous) =>
-                        new Set(
-                          [...previous].filter(
-                            (id) => !filtered.some((t) => t.target_id === id),
-                          ),
-                        ),
-                    )
-                  }
-                >
+                <button type="button" className="mp-text-button"
+                  onClick={() => setHidden((previous) => new Set([...previous].filter((id) => !filtered.some((t) => t.target_id === id))))}>
                   {words(l, "全部显示", "Show all")}
-                </Button>
-                <Button
-                  size="sm"
-                  variant="light"
-                  onPress={() =>
-                    setHidden(
-                      (previous) =>
-                        new Set([
-                          ...previous,
-                          ...filtered.map((t) => t.target_id),
-                        ]),
-                    )
-                  }
-                >
+                </button>
+                <button type="button" className="mp-text-button"
+                  onClick={() => setHidden((previous) => new Set([...previous, ...filtered.map((t) => t.target_id)]))}>
                   {words(l, "全部隐藏", "Hide all")}
-                </Button>
+                </button>
               </div>
             </div>
             <div className="mp-target-grid">
@@ -863,86 +569,48 @@ function NetworkAnalysis({
                 const last = t.points[t.points.length - 1];
                 const ts = targetStats([t]);
                 const latest = n.targets?.find((p) => p.id === t.target_id);
-                const current =
-                  n.status === "online" && n.monitor_enabled && latest
-                    ? latest.ms
-                    : last?.ms;
+                const current = n.status === "online" && n.monitor_enabled && latest ? latest.ms : last?.ms;
+                const off = hidden.has(t.target_id);
                 return (
                   <button
-                    className={`mp-target-card ${hidden.has(t.target_id) ? "is-hidden" : ""}`}
-                    style={
-                      {
-                        "--target-color": colors.get(t.target_id),
-                      } as React.CSSProperties
-                    }
+                    type="button"
+                    className={`mp-target-card ${off ? "is-hidden" : ""}`}
+                    style={{ "--target-color": colors.get(t.target_id) } as CSSProperties}
                     key={t.target_id}
-                    aria-pressed={!hidden.has(t.target_id)}
-                    onClick={() =>
-                      setHidden((previous) => {
-                        const next = new Set(previous);
-                        if (next.has(t.target_id)) next.delete(t.target_id);
-                        else next.add(t.target_id);
-                        return next;
-                      })
-                    }
+                    aria-pressed={!off}
+                    onClick={() => toggle(t.target_id)}
                   >
                     <div>
                       <i />
                       <strong>{t.name}</strong>
-                      <span className="mp-target-check">
-                        {!hidden.has(t.target_id) && <Check size={10} />}
-                      </span>
+                      <span className="mp-target-check">{!off && <Check size={10} />}</span>
                     </div>
                     <small title={t.host}>{t.host}</small>
                     <p>
                       <b>
                         {latency(current) === null
-                          ? current === 999 ||
-                            (last &&
-                              last.total > 0 &&
-                              last.timeouts === last.total)
+                          ? current === 999 || (last && last.total > 0 && last.timeouts === last.total)
                             ? words(l, "超时", "Timeout")
                             : "—"
                           : `${current!.toFixed(1)} ms`}
                       </b>
-                      <span>
-                        {words(l, "超时", "Timeout")} {percent(ts.failure)}
-                      </span>
+                      <span>{words(l, "超时", "Timeout")} {percent(ts.failure)}</span>
                     </p>
-                    <em>
-                      {words(l, "最后记录", "Last recorded")}{" "}
-                      {dateTime(last ? last.ts * 1000 : undefined, l)}
-                    </em>
+                    <em>{words(l, "最后记录", "Last recorded")} {dateTime(last ? last.ts * 1000 : undefined, l)}</em>
                   </button>
                 );
               })}
             </div>
           </>
         )}
-        <MetricChart
-          spec={targetSpec}
-          points={chart}
-          language={l}
-          range={range}
-          loading={loading}
-          large
-        />
+        <MetricChart spec={targetSpec} points={chart} domain={domain} language={l} range={range} loading={loading && !historyTargets.length} large />
         {!loading && !targets.length && (
           <p className="mp-section-hint">
-            {words(
-              l,
-              "所选时段还没有目标记录。启用延迟监控并等待节点上报后，即可查看。",
-              "No target history in this period. Enable latency monitoring and wait for the next node report.",
-            )}
+            {words(l, "所选时段还没有目标记录。启用延迟监控并等待节点上报后，即可查看。", "No target history in this period. Enable latency monitoring and wait for the next node report.")}
           </p>
         )}
       </div>
-      <MetricChart
-        spec={carrierSpec}
-        points={historyPoints}
-        language={l}
-        range={range}
-      />
+      <MetricChart spec={carrierSpec} points={historyPoints} domain={historyDomain} language={l} range={historyRange} />
       <section className="mp-route-panel">
         <div className="mp-network-heading">
           <div>
@@ -950,12 +618,8 @@ function NetworkAnalysis({
             <p>
               {words(
                 l,
-                n.route_enabled
-                  ? "节点最近一次上报的路由结果"
-                  : "该节点未启用回程检测",
-                n.route_enabled
-                  ? "Last route report from this node"
-                  : "Route detection is disabled for this node",
+                n.route_enabled ? "节点最近一次上报的路由结果" : "该节点未启用回程检测",
+                n.route_enabled ? "Last route report from this node" : "Route detection is disabled for this node",
               )}
             </p>
           </div>
@@ -964,49 +628,24 @@ function NetworkAnalysis({
         {Object.keys(n.routes || {}).length ? (
           <div className="mp-route-grid">
             {Object.entries(n.routes || {}).map(([key, route]) => (
-              <div key={key}>
+              <div key={key} className={`is-${route.status || "unknown"}`}>
                 <small>{route.name || carrierName(key)}</small>
                 <strong>{route.line || "—"}</strong>
                 <span>{route.as || route.as_num || "—"}</span>
                 <div>
-                  <Chip size="sm" variant="flat">
-                    {routeState(route.status)}
-                  </Chip>
-                  <span>
-                    {latency(route.ping) === null
-                      ? "—"
-                      : `${route.ping!.toFixed(1)} ms`}
-                  </span>
+                  <Tag>{routeState(route.status)}</Tag>
+                  <span>{latency(route.ping) === null ? "—" : `${route.ping!.toFixed(1)} ms`}</span>
                 </div>
               </div>
             ))}
           </div>
         ) : (
-          <div className="mp-route-empty">
-            {words(l, "暂无回程线路记录", "No route report available")}
-          </div>
+          <div className="mp-route-empty">{words(l, "暂无回程线路记录", "No route report available")}</div>
         )}
       </section>
-      <Modal
-        isOpen={expanded}
-        onOpenChange={setExpanded}
-        size="5xl"
-        scrollBehavior="inside"
-        classNames={{ base: "mp-chart-modal" }}
-      >
-        <ModalContent>
-          <ModalHeader>{targetSpec.title}</ModalHeader>
-          <ModalBody>
-            <MetricChart
-              spec={targetSpec}
-              points={chart}
-              language={l}
-              range={range}
-              large
-            />
-          </ModalBody>
-        </ModalContent>
-      </Modal>
+      <Dialog open={expanded} onClose={() => setExpanded(false)} title={targetSpec.title} wide closeLabel={words(l, "关闭", "Close")}>
+        <MetricChart spec={targetSpec} points={chart} domain={domain} language={l} range={range} large />
+      </Dialog>
     </div>
   );
 }

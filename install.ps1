@@ -96,8 +96,19 @@ try {
         if ($Reader.ReadUInt32() -ne 0x4550 -or $Reader.ReadUInt16() -ne 0x8664) { throw 'Expected a Windows amd64 executable.' }
     } finally { $Reader.Dispose() }
     if (Test-Path -LiteralPath (Join-Path $Root 'web\dist')) {
-        # Keep old hashed chunks available to tabs opened before this update.
-        Get-ChildItem -LiteralPath (Join-Path $Root 'web\dist') -File | Where-Object { $_.Name -match '^.+-[\w-]{8,}\.(js|css|woff2?|svg|png)$' -and -not ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) } | ForEach-Object {
+        # Keep only the immediately preceding build's dependency graph.
+        $PreviousManifest = Join-Path $Root 'web\dist\build-manifest.json'
+        $PreviousAssets = $null
+        if (Test-Path -LiteralPath $PreviousManifest) {
+            $PreviousAssets = [Collections.Generic.HashSet[string]]::new([StringComparer]::Ordinal)
+            (Get-Content -LiteralPath $PreviousManifest -Raw | ConvertFrom-Json).PSObject.Properties | ForEach-Object {
+                $Entry = $_.Value
+                foreach ($Asset in @($Entry.file) + @($Entry.css) + @($Entry.assets)) {
+                    if ($Asset) { [void]$PreviousAssets.Add([string]$Asset) }
+                }
+            }
+        }
+        Get-ChildItem -LiteralPath (Join-Path $Root 'web\dist') -File | Where-Object { $_.Name -match '^.+-[\w-]{8,}\.(js|css|woff2?|svg|png)$' -and -not ($_.Attributes -band [IO.FileAttributes]::ReparsePoint) -and ($null -eq $PreviousAssets -or $PreviousAssets.Contains($_.Name)) } | ForEach-Object {
             $Destination = Join-Path (Join-Path $Package 'web\dist') $_.Name
             if (-not (Test-Path -LiteralPath $Destination)) { Copy-Item -LiteralPath $_.FullName -Destination $Destination }
         }

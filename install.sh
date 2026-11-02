@@ -113,12 +113,20 @@ with (target/'moniter').open('rb') as binary: header=binary.read(64)
 if header[:6]!=b'\x7fELF\x02\x01' or struct.unpack_from('<H',header,18)[0]!=(183 if sys.argv[4]=='linux-arm64' else 62): sys.exit('主控二进制架构不匹配')
 PY
 if [[ -d $ROOT/web/dist ]]; then
-  # Existing browser tabs may still request the previous build's hashed chunks.
+  # Keep the previous build's dependencies, rather than every historical build.
   python3 - "$ROOT/web/dist" "$STAGING/package/web/dist" <<'PY'
-import pathlib,re,shutil,sys
+import json,pathlib,re,shutil,sys
 source,target=map(pathlib.Path,sys.argv[1:])
+manifest=source/'build-manifest.json'
+keep=None
+if manifest.is_file():
+    keep=set()
+    for entry in json.loads(manifest.read_text()).values():
+        keep.add(entry['file'])
+        keep.update(entry.get('css',[]))
+        keep.update(entry.get('assets',[]))
 for file in source.iterdir():
-    if file.is_file() and not file.is_symlink() and re.fullmatch(r'.+-[\w-]{8,}\.(js|css|woff2?|svg|png)',file.name) and not (target/file.name).exists():
+    if file.is_file() and not file.is_symlink() and (keep is None or file.name in keep) and re.fullmatch(r'.+-[\w-]{8,}\.(js|css|woff2?|svg|png)',file.name) and not (target/file.name).exists():
         shutil.copyfile(file,target/file.name)
         (target/file.name).chmod(0o644)
 PY

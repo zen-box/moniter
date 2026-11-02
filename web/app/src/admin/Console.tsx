@@ -97,10 +97,14 @@ import { VersionProvider, VersionSettings, UpdateNotice } from "./VersionSetting
 import { NodeEditor } from "./NodeEditor";
 import { ConfirmProvider, useConfirm } from "./ConfirmProvider";
 import { AlertRuleFields, type ResourceRules } from "./AlertRuleFields";
-import {englishAlert} from "../messages";
+import {englishAlert, englishMessage} from "../messages";
+import { InitialPasswordNotice } from "./InitialPasswordNotice";
 
 
 import {useLanguage,useTheme,useSiteName,initialServers} from "../runtime";
+import { useLiveNodes } from "../public/useLiveNodes";
+import { MiniRing } from "../public/Gauge";
+import { number, ratio } from "../public/format";
 const CardHeader = (props: React.ComponentProps<typeof HeroCardHeader>) => <HeroCardHeader {...props} data-slot="header" />;
 const CardBody = (props: React.ComponentProps<typeof HeroCardBody>) => <HeroCardBody {...props} data-slot="body" />;
 type AlertConfig = {
@@ -258,7 +262,7 @@ function LoginPage({ siteName }: { siteName: string }) {
             </Button>
           </form>
           <p className="login-foot">
-            <ShieldCheck size={14} /> {language === "zh" ? "会话绑定登录来源 IP" : "Session is bound to the sign-in IP"}
+            <ShieldCheck size={14} /> {language === "zh" ? "会话绑定登录网络" : "Session is bound to your sign-in network"}
           </p>
         </CardBody>
       </Card>
@@ -282,12 +286,14 @@ function AppShell({
   page,
   setPage,
   refreshing = false,
+  notice,
   children,
 }: {
   siteName: string;
   page: string;
   setPage: (p: string) => void;
   refreshing?: boolean;
+  notice?: React.ReactNode;
   children: React.ReactNode;
 }) {
   const [theme, setTheme] = useTheme();
@@ -466,6 +472,7 @@ function AppShell({
           )}
         </AnimatePresence>
         <main className="content">
+          {notice}
           <div key={page} className="page-transition">{children}</div>
         </main>
       </div>
@@ -500,6 +507,54 @@ function StatCard({
   );
 }
 
+/** Live CPU / memory / disk rings, fed by the same stream as the public page. */
+function LiveLoadCard() {
+  const { language, t } = useLanguage();
+  const { nodes, connection } = useLiveNodes(initialServers());
+  const rows = useMemo(
+    () =>
+      [...nodes]
+        .sort((a, b) => Number(b.status === "online") - Number(a.status === "online") || Number(b.current_cpu || 0) - Number(a.current_cpu || 0))
+        .slice(0, 8),
+    [nodes],
+  );
+  return (
+    <Card className="chart-card live-load-card">
+      <CardHeader>
+        <div>
+          <h3>{t("overview.nodeLoad", "节点负载")}</h3>
+          <p>{language === "zh" ? "实时 CPU、内存与磁盘 · 按 CPU 排序" : "Live CPU, memory and disk · sorted by CPU"}</p>
+        </div>
+        <span className={`live-dot is-${connection}`}>{connection === "live" ? (language === "zh" ? "实时" : "Live") : connection === "paused" ? (language === "zh" ? "已暂停" : "Paused") : (language === "zh" ? "连接中" : "Connecting")}</span>
+      </CardHeader>
+      <CardBody>
+        {rows.length ? (
+          <div className="live-load-list">
+            {rows.map((n) => {
+              const online = n.status === "online";
+              return (
+                <div key={n.id} className={online ? "" : "is-offline"}>
+                  <img src={flag(n.region)} alt="" />
+                  <strong title={n.name}>{n.name}</strong>
+                  <MiniRing value={online ? number(n.current_cpu) : null} label="CPU" />
+                  <MiniRing value={online ? ratio(n.mem_used_mb, n.mem_total_mb) : null} label={language === "zh" ? "内存" : "Memory"} />
+                  <MiniRing value={online ? ratio(n.disk_used_bytes, n.disk_total_bytes) : null} label={language === "zh" ? "磁盘" : "Disk"} warn={80} crit={92} />
+                </div>
+              );
+            })}
+          </div>
+        ) : (
+          <EmptyState
+            icon={<Server size={24} />}
+            title={t("overview.noLiveNodes", "还没有实时节点")}
+            description={t("overview.agentOnlineLoad", "Agent 上线后，这里会显示当前负载。")}
+          />
+        )}
+      </CardBody>
+    </Card>
+  );
+}
+
 function Overview({
   nodes,
   costs,
@@ -529,12 +584,6 @@ function Overview({
   const avg = latency.length
     ? Math.round(latency.reduce((a, b) => a + b, 0) / latency.length)
     : 0;
-  const chart = nodes.filter(n=>n.status==="online" && n.current_cpu!=null).slice(0, 8).map((n, i) => ({
-    name: n.name,
-    cpu: Number(n.current_cpu || 0),
-    traffic: Number(n.traffic_used_gb || 0),
-    index: i + 1,
-  }));
   return (
     <div className="page-stack">
       <div className="page-intro">
@@ -590,53 +639,7 @@ function Overview({
       </div>
       <DashboardHistory nodes={nodes} />
       <div className="dashboard-grid">
-        <Card className="chart-card">
-          <CardHeader>
-            <div>
-          <h3>{t("overview.nodeLoad", "节点负载")}</h3>
-          <p>{t("overview.nodeLoadHint", "当前 CPU 使用率 · 前 8 个节点")}</p>
-            </div>
-          </CardHeader>
-          <CardBody>
-            <div className="chart-wrap">
-              {chart.length ? (
-                <ResponsiveContainer width="100%" height="100%">
-                  <BarChart data={chart}>
-                    <CartesianGrid
-                      strokeDasharray="3 3"
-                      vertical={false}
-                      stroke="var(--line)"
-                    />
-                    <XAxis
-                      dataKey="name"
-                      tick={{ fill: "var(--muted)", fontSize: 11 }}
-                    />
-                    <YAxis tick={{ fill: "var(--muted)", fontSize: 11 }} />
-                    <ChartTooltip
-                      contentStyle={{
-                        background: "var(--surface-strong)",
-                        border: "1px solid var(--line)",
-                        borderRadius: 12,
-                      }}
-                    />
-                    <Bar
-                      dataKey="cpu"
-                      name="CPU %"
-                      fill="#1683ff"
-                      radius={[5, 5, 0, 0]}
-                    />
-                  </BarChart>
-                </ResponsiveContainer>
-              ) : (
-                <EmptyState
-                  icon={<Server size={24} />}
-                  title={t("overview.noLiveNodes", "还没有实时节点")}
-                  description={t("overview.agentOnlineLoad", "Agent 上线后，这里会显示当前负载。")}
-                />
-              )}
-            </div>
-          </CardBody>
-        </Card>
+        <LiveLoadCard />
         <Card className="chart-card">
           <CardHeader>
             <div>
@@ -759,6 +762,7 @@ function AdminApp({ siteName }: { siteName: string }) {
   const [nodes, setNodes] = useState<ServerNode[]>(initialServers);
   const [costs, setCosts] = useState<CostNode[]>([]);
   const [refreshing, setRefreshing] = useState(false);
+  const [passwordFocusRequest, setPasswordFocusRequest] = useState(0);
   const load = (showProgress = false) => {
     if (showProgress) setRefreshing(true);
     return Promise.all([
@@ -807,6 +811,7 @@ function AdminApp({ siteName }: { siteName: string }) {
     ) : page === "settings" ? (
       <SettingsPage
         siteName={brandName}
+        passwordFocusRequest={passwordFocusRequest}
         onSaved={(name) => {
           setBrandName(name);
           document.title = name;
@@ -821,6 +826,10 @@ function AdminApp({ siteName }: { siteName: string }) {
       page={page}
       setPage={go}
       refreshing={refreshing}
+      notice={<InitialPasswordNotice onChangePassword={() => {
+        setPasswordFocusRequest(value => value + 1);
+        go("settings");
+      }} />}
     >
       {loadError && <RequestFailure error={loadError} retry={() => load(true)} />}
       {content}
@@ -2135,11 +2144,20 @@ function AuditPage() {
 function SettingsPage({
   siteName,
   onSaved,
+  passwordFocusRequest = 0,
 }: {
   siteName: string;
   onSaved: (name: string) => void;
+  passwordFocusRequest?: number;
 }) {
   const { language, t } = useLanguage();
+  const passwordSection = useRef<HTMLElement>(null);
+  const reduceMotion = useReducedMotion();
+  useEffect(() => {
+    if (!passwordFocusRequest) return;
+    passwordSection.current?.scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth", block: "center" });
+    passwordSection.current?.querySelector<HTMLInputElement>("input")?.focus({ preventScroll: true });
+  }, [passwordFocusRequest, reduceMotion]);
   const [name, setName] = useState(siteName);
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
@@ -2180,7 +2198,8 @@ function SettingsPage({
         new_password: newPassword,
       }),
     });
-    setSecurityMessage(result.message || "密码已更新");
+    const message = result.message || (language === "zh" ? "密码已更新" : "Password updated");
+    setSecurityMessage(language === "en" ? englishMessage(message) : message);
     if (result.success) {
       setOldPassword("");
       setNewPassword("");
@@ -2245,7 +2264,7 @@ function SettingsPage({
           <Divider />
           <VersionSettings />
           <Divider />
-          <section className="settings-row">
+          <section className="settings-row" id="admin-password" ref={passwordSection}>
             <div className="settings-row-copy">
               <div className="settings-row-icon"><ShieldCheck size={17} /></div>
               <div>
@@ -2254,8 +2273,8 @@ function SettingsPage({
               </div>
             </div>
             <div className="settings-row-fields">
-              <Input label={t("settings.currentPassword", "当前密码")} type="password" value={oldPassword} onValueChange={setOldPassword} />
-              <Input label={t("settings.newPassword", "新密码")} type="password" value={newPassword} onValueChange={setNewPassword} />
+              <Input id="admin-current-password" autoComplete="current-password" label={t("settings.currentPassword", "当前密码")} type="password" value={oldPassword} onValueChange={setOldPassword} />
+              <Input autoComplete="new-password" label={t("settings.newPassword", "新密码")} type="password" value={newPassword} onValueChange={setNewPassword} />
               <div className="settings-row-actions"><Button color="primary" onPress={changePassword} isDisabled={securityBusy || !!twoFaError || twoFaLoading}>{t("settings.updatePassword", "更新密码")}</Button></div>
             </div>
           </section>
@@ -2295,4 +2314,8 @@ function SettingsPage({
   );
 }
 
-export default function ConsoleRoute(){const siteName=useSiteName();return location.pathname==="/admin/login"?<LoginPage siteName={siteName}/>:<VersionProvider><AdminApp siteName={siteName}/></VersionProvider>;}
+// Providers live here so the public status page never loads the component library.
+export default function ConsoleRoute(){const siteName=useSiteName();const {language}=useLanguage();const reduced=useReducedMotion();
+  return <HeroUIProvider disableRipple disableAnimation={!!reduced}><MotionConfig reducedMotion="user"><ConfirmProvider language={language}>
+    {location.pathname==="/admin/login"?<LoginPage siteName={siteName}/>:<VersionProvider><AdminApp siteName={siteName}/></VersionProvider>}
+  </ConfirmProvider></MotionConfig></HeroUIProvider>;}

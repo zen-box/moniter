@@ -10,6 +10,8 @@ const messages:Record<string,string>={
   "已用流量不能为负数":"Traffic usage cannot be negative", "流量数值无效":"Invalid traffic value", "IP / 域名格式不正确":"Invalid IP address or hostname",
   "端口必须在 1-65535 之间":"Port must be between 1 and 65535", "新密码至少 8 位":"New password must contain at least 8 characters",
   "密码已更新，请重新登录":"Password updated. Please sign in again.", "两步验证已启用，请先关闭":"Disable two-factor authentication first",
+  "新密码不能与当前密码相同":"Choose a password different from your current password.",
+  "密码保存失败，请稍后重试":"Could not save the password. Please try again.",
   "验证码不正确，请确认手机时间是否准确":"Incorrect code. Check the time on your authenticator device.", "两步验证已启用":"Two-factor authentication enabled",
   "两步验证已关闭":"Two-factor authentication disabled", "非法的主题标识":"Invalid theme ID", "主题不存在":"Theme not found",
   "无法删除内置主题或无效主题":"Cannot delete the built-in theme or an invalid theme", "请先切换到其他主题，再删除当前主题":"Switch to another theme before deleting the active theme",

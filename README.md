@@ -61,6 +61,8 @@ cargo build --release --locked --workspace
 
 Windows 运行 `target\release\aegis-server.exe`。工作目录应为项目根目录，随主控发布 `web/dist`、`web/assets` 和所需的 `binaries`。内置前后台使用 `web/dist` 的 React 构建产物。`web/themes` 仅保存用户安装的第三方主题，安装时自动创建，不随源码或官方安装包分发。
 
+`npm run build` 先在临时目录完成构建，再更新 `web/dist`，保留上一版资源供已打开的页面使用，并清理更早的产物。`npm run build:release` 仅保留当前构建，用于制作发行包；发行打包也按构建清单排除历史资源。
+
 - 前台：`http://127.0.0.1:8080/`
 - 后台：`http://127.0.0.1:8080/admin`
 - 健康检查：`GET /api/v1/ping`
@@ -117,7 +119,7 @@ SMTP、Telegram、Webhook 可独立启用，并支持发送测试通知。全局
 
 测试通知使用已启用的渠道，便于在全局告警暂停时调试；部分渠道失败会明确报告成功渠道和错误。SMTP 465 使用隐式 TLS，其他端口使用 STARTTLS。Webhook 支持通用 JSON、企业微信、飞书、钉钉与 Discord 格式预设；机器人额外的关键词、签名或权限规则由接收平台配置。通用 JSON 包含 `title`、`content`、`source`，站名取自网站设置；允许内部接收器，不跟随重定向。外部请求均有超时。登录成功可单独启用通知；成功、失败与来源 IP 都记入安全审计，时间按浏览器本地时区显示。
 
-管理员密码使用 Argon2id 哈希，支持 TOTP。会话持久化、绑定来源 IP，**30 天滑动有效期**：同浏览器、同 IP 重启无需重登，IP 变化需重新登录。退出撤销当前会话，改密码撤销全部会话。连续 5 次登录失败锁定来源 IP 15 分钟。
+管理员密码使用 Argon2id 哈希，支持 TOTP。会话持久化、绑定登录时的网络，**30 天滑动有效期**：同浏览器重启无需重登。默认按网段绑定（IPv4 /24、IPv6 /64），同网段内的地址变化（DHCP 续租、IPv6 临时地址）不会掉线；来自其他网络的请求会被拒绝并记入安全审计，但不会吊销原会话，回到原网络后仍可继续使用。网络在 IPv4 与 IPv6 之间交替的环境可设 `AEGIS_SESSION_IP_BINDING=off`。退出撤销当前会话，改密码撤销全部会话。连续 5 次登录失败锁定来源 IP 15 分钟。
 
 TOTP 目前没有一次性恢复码，请备份验证器；改密码本身不会关闭两步验证。
 
@@ -167,6 +169,7 @@ server {
 | `AEGIS_PUBLIC_URL` | 校验后的请求来源 | 安装脚本的外部 HTTP(S) 来源，不含路径或参数 |
 | `AEGIS_TRUST_PROXY` | 关闭 | `1` 或 `true` 开启可信代理头 |
 | `AEGIS_TRUSTED_PROXIES` | `127.0.0.0/8,::1/128` | 逗号分隔的可信代理 CIDR |
+| `AEGIS_SESSION_IP_BINDING` | `network` | 管理会话绑定范围：`network`（同网段）、`strict`（同一地址）或 `off` |
 | `AEGIS_AGENT_TOKEN_FILE` | 未设置 | Agent 令牌文件路径 |
 | `MONITER_UPDATE_CHECK` | 开启 | 设为 `0` 或 `false` 关闭 GitHub 版本检查；离线部署或隔离测试可关闭 |
 
@@ -198,17 +201,17 @@ npm run build
 
 ## 版本与自动构建
 
-首版为 **0.1.0**，官方仓库为 `zen-box/moniter`。后台「网站设置 → 版本更新」显示当前版本、最新正式版和上次检查时间，可手动检查。主控启动后异步检查，此后每 6 小时检查 GitHub Releases；有新版本时后台顶栏出现入口。检查失败保留上次成功结果，60 秒内的重复检查合并。尚未发布正式版时显示「尚未发布正式版」。仅提示更新，不自动覆盖或重启程序。
+当前版本为 **0.1.1**，官方仓库为 `zen-box/moniter`。后台「网站设置 → 版本更新」显示当前版本、最新正式版和上次检查时间，可手动检查。主控启动后异步检查，此后每 6 小时检查 GitHub Releases；有新版本时后台顶栏出现入口。检查失败保留上次成功结果，60 秒内的重复检查合并。尚未发布正式版时显示「尚未发布正式版」。仅提示更新，不自动覆盖或重启程序。
 
 主控与 Agent **分别维护在两个分支，独立构建、独立发布**：`main` 仅含主控与前端源码，`agent` 仅含 Agent 源码。两者的 Cargo 工作区、锁文件和构建工作流分开维护。
 
 | 分支 | 标签 | 工作流 | 发布产物 |
 | --- | --- | --- | --- |
-| `main` | `v0.1.0` | `release-server.yml` | 主控 Linux amd64、Linux arm64、Windows amd64，各自包含 React 前端、地图、国旗与已发布的三平台 Agent 二进制 |
-| `agent` | `agent-v0.1.0` | `release-agent.yml` | Agent 的同样三种平台安装包 |
+| `main` | `v0.1.1` | `release-server.yml` | 主控 Linux amd64、Linux arm64、Windows amd64，各自包含 React 前端、地图、国旗与已发布的三平台 Agent 二进制 |
+| `agent` | `agent-v0.1.1` | `release-agent.yml` | Agent 的同样三种平台安装包 |
 
 Linux 采用原生 amd64 / arm64 runner 和 musl 静态链接，Windows 使用 MSVC。标签必须在对应分支创建，并与该分支的 `Cargo.toml` 版本一致。普通代码推送与 PR 不触发构建；只有推送 `v*` 或 `agent-v*` 标签才执行对应组件的测试、编译、打包和 Release 发布。更新 `main` 不编译 Agent，主控标签不触发 Agent 编译，Agent 标签也不触发主控编译。Agent Release 不标为主控最新版本，更新检测同时过滤 Agent、草稿与预发布标签。请分别提交和推送两个分支，不要把 `agent` 合并回 `main`。
 
-**首次发布先在 `agent` 分支推 `agent-v0.1.0`，等 Agent Release 成功后，再在 `main` 分支推 `v0.1.0`。** 主控从 `server/agent-version.txt` 指定的既有 Agent Release 下载三平台产物打包；缺少指定 Agent Release 时，主控发行流程会停止。以后只改主控时，更新 `server/Cargo.toml` 与前端包版本，再打主控标签；Agent 无变动无需发新版本。Agent 升级时，在 `agent` 分支发布新的 `agent-vX.Y.Z`，再按需修改 `main` 的 `agent-version.txt`。
+**本次 Agent 同步升级：先在 `agent` 分支发布 `agent-v0.1.1`，等 Agent Release 成功后，再在 `main` 分支发布 `v0.1.1`。** 主控从 `server/agent-version.txt` 指定的既有 Agent Release 下载三平台产物打包；缺少指定 Agent Release 时，主控发行流程会停止。以后只改主控时，更新 `server/Cargo.toml` 与前端包版本，再打主控标签；Agent 无变动无需发新版本。Agent 升级时，在 `agent` 分支发布新的 `agent-vX.Y.Z`，再按需修改 `main` 的 `agent-version.txt`。
 
-发布文件命名为 `moniter-0.1.0-<平台>.tar.gz`（Windows 为 `.zip`），Agent 为 `moniter-agent-0.1.0-<平台>`。主控解压后在该目录运行 `./moniter` 或 `moniter.exe`；Agent 可运行 `./moniter-agent`。包内 `release.json` 记录组件、平台和所含 Agent 版本。发布包采用目录白名单，不含 `data`、日志、凭据或用户上传的主题。
+发布文件命名为 `moniter-0.1.1-<平台>.tar.gz`（Windows 为 `.zip`），Agent 为 `moniter-agent-0.1.1-<平台>`。主控解压后在该目录运行 `./moniter` 或 `moniter.exe`；Agent 可运行 `./moniter-agent`。包内 `release.json` 记录组件、平台和所含 Agent 版本。发布包采用目录白名单，不含 `data`、日志、凭据或用户上传的主题。

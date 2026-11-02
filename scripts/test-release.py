@@ -88,6 +88,10 @@ class ReleaseTests(unittest.TestCase):
                 "server/Cargo.toml": '[package]\nversion="0.1.0"',
                 "server/agent-version.txt": "0.1.0",
                 "web/dist/index.html": "built app",
+                "web/dist/build-manifest.json": json.dumps({"index.html": {"file": "app-12345678.js", "css": ["app-12345678.css"]}}),
+                "web/dist/app-12345678.js": "current app",
+                "web/dist/app-12345678.css": "current styles",
+                "web/dist/old-12345678.js": "previous app kept for existing tabs",
                 "web/assets/flags/cn.svg": "flag",
                 "web/assets/world-map-paths.svg": "map",
                 "web/themes/private/index.html": "user theme",
@@ -110,6 +114,7 @@ class ReleaseTests(unittest.TestCase):
                 names = set(contents.namelist())
                 self.assertEqual(names, {
                     "moniter.exe", "README.md", "release.json", "install.sh", "install.ps1", "web/dist/index.html",
+                    "web/dist/build-manifest.json", "web/dist/app-12345678.js", "web/dist/app-12345678.css",
                     "web/assets/flags/cn.svg", "web/assets/world-map-paths.svg",
                     *{f"binaries/aegis-agent-{platform}" for platform in release.TARGETS},
                 })
