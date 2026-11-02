@@ -29,7 +29,7 @@ cargo build --release --locked
 
 ## 独立发布
 
-当前首版为 **0.1.0**。在本分支修改 `agent/Cargo.toml` 版本、测试并提交后，创建对应标签：
+当前版本为 **0.1.1**。在本分支修改 `agent/Cargo.toml` 版本、测试并提交后，创建对应标签：
 
 ```bash
 git switch agent
@@ -42,12 +42,12 @@ git push origin agent-v0.1.0
 
 | 平台 | 安装包 |
 | --- | --- |
-| Linux amd64 | `moniter-agent-0.1.0-linux-amd64.tar.gz` |
-| Linux arm64 | `moniter-agent-0.1.0-linux-arm64.tar.gz` |
-| Windows amd64 | `moniter-agent-0.1.0-windows-amd64.zip` |
+| Linux amd64 | `moniter-agent-0.1.1-linux-amd64.tar.gz` |
+| Linux arm64 | `moniter-agent-0.1.1-linux-arm64.tar.gz` |
+| Windows amd64 | `moniter-agent-0.1.1-windows-amd64.zip` |
 
 Linux 使用 musl 静态链接，Windows 使用 MSVC。包内仅含 Agent、README 和 `release.json`，不含令牌、数据库或主控。Agent Release 不设为仓库最新主控版本。
 
-主控 `main` 根据 `server/agent-version.txt` 从已发布的 Agent Release 获取三个二进制；主控更新不会重新构建 Agent。Agent 没有变动时不必发新版本。首次部署先发布本分支的 `agent-v0.1.0`，成功后再发布 `main` 的 `v0.1.0`。
+主控 `main` 根据 `server/agent-version.txt` 从已发布的 Agent Release 获取三个二进制；主控更新不会重新构建 Agent。Agent 没有变动时不必发新版本。首次部署先发布本分支的 `agent-v0.1.1`，成功后再发布 `main` 的 `v0.1.1`。
 
 普通代码推送与 PR 不触发构建。只有推送 `agent-v*` 标签，才会执行三平台测试、构建和 Release 发布。

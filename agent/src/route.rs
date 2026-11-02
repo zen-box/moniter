@@ -93,16 +93,22 @@ fn intermediate_hops(output: &str, target: &str) -> String {
 
 /// 按经过的骨干网 IP 段判断线路类型。
 /// 判据取自三家实际使用的骨干网地址段，识别不到就返回 None。
+fn has_prefix(out: &str, prefix: [u8; 2]) -> bool {
+    out.split_whitespace()
+        .filter_map(|hop| hop.parse::<std::net::Ipv4Addr>().ok())
+        .any(|ip| ip.octets()[..2] == prefix)
+}
+
 fn classify_ct(out: &str) -> Option<RouteInfo> {
-    if out.contains("59.43.") {
+    if has_prefix(out, [59, 43]) {
         return Some(RouteInfo {
             name: "中国电信".into(),
-            line: if out.contains("202.97.") {"CN2 / 163 混合"} else {"CN2 骨干"}.into(),
+            line: if has_prefix(out, [202, 97]) {"CN2 / 163 混合"} else {"CN2 骨干"}.into(),
             as_num: "AS4809".into(),
             status: "good".into(),
         });
     }
-    if out.contains("202.97.") {
+    if has_prefix(out, [202, 97]) {
         return Some(RouteInfo {
             name: "中国电信".into(),
             line: "163 骨干".into(),
@@ -114,7 +120,7 @@ fn classify_ct(out: &str) -> Option<RouteInfo> {
 }
 
 fn classify_cu(out: &str) -> Option<RouteInfo> {
-    if out.contains("218.105.") {
+    if has_prefix(out, [218, 105]) {
         return Some(RouteInfo {
             name: "中国联通".into(),
             line: "AS9929 精品网".into(),
@@ -122,7 +128,7 @@ fn classify_cu(out: &str) -> Option<RouteInfo> {
             status: "optimal".into(),
         });
     }
-    if out.contains("219.158.") {
+    if has_prefix(out, [219, 158]) {
         return Some(RouteInfo {
             name: "中国联通".into(),
             line: "联通 169 骨干".into(),
@@ -134,10 +140,10 @@ fn classify_cu(out: &str) -> Option<RouteInfo> {
 }
 
 fn classify_cm(out: &str) -> Option<RouteInfo> {
-    if out.contains("223.120.") {
+    if has_prefix(out, [223, 120]) {
         return Some(RouteInfo {name:"中国移动".into(),line:"CMI 骨干".into(),as_num:"AS58453".into(),status:"good".into()});
     }
-    if out.contains("221.183.") {
+    if has_prefix(out, [221, 183]) {
         return Some(RouteInfo {name:"中国移动".into(),line:"移动国内骨干".into(),as_num:"AS9808".into(),status:"normal".into()});
     }
     None
@@ -169,5 +175,22 @@ mod tests {
         assert!(!classify_ct("59.43.1.1 202.97.1.1").unwrap().line.contains("GIA"));
         assert_eq!(classify_cm("223.120.1.1").unwrap().as_num,"AS58453");
         assert!(classify_cm("211.136.192.6").is_none());
+    }
+
+    #[test]
+    fn classification_requires_complete_valid_addresses() {
+        for hop in ["10.59.43.1", "159.43.1.1", "59.43.999.1", "59.43.", "host-59.43.1.1"] {
+            assert!(classify_ct(hop).is_none(), "false CN2 evidence: {hop}");
+        }
+        for hop in ["1218.105.1.1", "10.218.105.1", "219.158.999.1"] {
+            assert!(classify_cu(hop).is_none(), "false Unicom evidence: {hop}");
+        }
+        for hop in ["1223.120.1.1", "10.223.120.1", "221.183.999.1"] {
+            assert!(classify_cm(hop).is_none(), "false Mobile evidence: {hop}");
+        }
+        assert_eq!(classify_ct("10.59.43.1 202.97.1.1").unwrap().as_num, "AS4134");
+        assert_eq!(classify_ct("59.43.0.0 59.43.255.255").unwrap().as_num, "AS4809");
+        assert_eq!(classify_cu("218.105.1.1 219.158.1.1").unwrap().as_num, "AS9929");
+        assert_eq!(classify_cm("221.183.1.1").unwrap().as_num, "AS9808");
     }
 }
