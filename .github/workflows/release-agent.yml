@@ -61,6 +61,13 @@ jobs:
         run: |
           cargo test --locked -p aegis-agent --target '${{ matrix.target }}'
           cargo build --release --locked -p aegis-agent --target '${{ matrix.target }}'
+      - name: Verify TLS initialization in the built Agent
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          suffix=''
+          if [[ "$RUNNER_OS" == Windows ]]; then suffix='.exe'; fi
+          python scripts/test-agent-tls.py "target/$TARGET/release/aegis-agent$suffix"
       - name: Package Agent
         env:
           PLATFORM: ${{ matrix.platform }}

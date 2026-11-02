@@ -1,6 +1,8 @@
 mod ping;
 mod route;
 mod sys;
+#[cfg(test)]
+mod tls_tests;
 
 use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
@@ -98,8 +100,15 @@ async fn probe_all(targets: Vec<TargetSpec>) -> Vec<TargetResult> {
     futures_util::future::join_all(futures).await
 }
 
+fn init_tls_provider() {
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .expect("Failed to initialize the TLS crypto provider");
+}
+
 #[tokio::main]
 async fn main() {
+    init_tls_provider();
     println!("🦀 Moniter Agent 启动中...");
 
     let args: Vec<String> = env::args().collect();
