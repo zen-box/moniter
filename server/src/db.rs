@@ -483,7 +483,7 @@ pub fn init_db_with_bootstrap(
     let mut bootstrap_credentials = None;
     initialize_password_change_state(&conn)?;
     let count: i64 = conn.query_row(
-        "SELECT COUNT(*) FROM admin WHERE username = 'admin'",
+        "SELECT COUNT(*) FROM admin WHERE id = 1",
         [],
         |r| r.get(0),
     )?;
@@ -513,24 +513,23 @@ pub fn init_db_with_bootstrap(
     } else {
         // 老版本可能仍在使用 admin123。首次发现时立刻轮换成随机口令，
         // 并把新凭据交给启动入口只显示一次。
-        let hash: String = conn
+        let (username, hash): (String, String) = conn
             .query_row(
-                "SELECT password_hash FROM admin WHERE username = 'admin'",
+                "SELECT username, password_hash FROM admin WHERE id = 1",
                 [],
-                |r| r.get(0),
-            )
-            .unwrap_or_default();
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )?;
         if crate::auth::verify_password("admin123", &hash) {
             let password = crate::auth::generate_admin_password();
             let new_hash = crate::auth::hash_password(&password);
             conn.execute(
-                "UPDATE admin SET password_hash = ?1, updated_at = CURRENT_TIMESTAMP WHERE username = 'admin'",
+                "UPDATE admin SET password_hash = ?1, updated_at = CURRENT_TIMESTAMP WHERE id = 1",
                 [&new_hash],
             )?;
             conn.execute("DELETE FROM admin_sessions", [])?;
             set_password_changed(&conn, false)?;
             bootstrap_credentials = Some(BootstrapAdminCredentials {
-                username: "admin".to_string(), password,
+                username, password,
             });
         }
     }
@@ -562,6 +561,36 @@ pub fn init_db_with_bootstrap(
 mod tests {
     use super::{default_monitor_targets, initialize_password_change_state, password_change_recommended, set_password_changed};
     use std::collections::HashSet;
+
+    #[test]
+    fn renamed_administrator_survives_database_reopening_without_bootstrap() {
+        let path = std::env::temp_dir().join(format!("moniter-renamed-admin-{}.db", rand::random::<u64>()));
+        let path_str = path.to_str().unwrap();
+        let (pool, _) = super::init_db_with_bootstrap(path_str).unwrap();
+        let hash = crate::auth::hash_password("Fixture-private-password-42!");
+        {
+            let conn = pool.lock().unwrap();
+            conn.execute("UPDATE admin SET username='owner',password_hash=?1,totp_enabled=1,totp_secret='preserved' WHERE id=1", [&hash]).unwrap();
+            conn.execute("DELETE FROM monitor_targets", []).unwrap();
+            set_password_changed(&conn, true).unwrap();
+        }
+        drop(pool);
+        let (pool, credentials) = super::init_db_with_bootstrap(path_str).unwrap();
+        assert!(credentials.is_none());
+        {
+            let conn = pool.lock().unwrap();
+            let account: (String,String,i64,String) = conn.query_row(
+                "SELECT username,password_hash,totp_enabled,totp_secret FROM admin WHERE id=1", [],
+                |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?)),
+            ).unwrap();
+            assert_eq!(account, ("owner".into(),hash,1,"preserved".into()));
+            assert!(!password_change_recommended(&conn).unwrap());
+            assert_eq!(conn.query_row("SELECT COUNT(*) FROM admin", [], |row| row.get::<_,i64>(0)).unwrap(), 1);
+            assert_eq!(conn.query_row("SELECT COUNT(*) FROM monitor_targets", [], |row| row.get::<_,i64>(0)).unwrap(), 0);
+        }
+        drop(pool);
+        std::fs::remove_file(path).unwrap();
+    }
 
     #[test]
     fn password_reminder_migrates_audit_history_and_preserves_saved_state() {

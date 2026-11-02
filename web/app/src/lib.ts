@@ -152,10 +152,17 @@ export const requestError = (error: unknown) => error instanceof Error ? error.m
 
 export async function copyText(text:string) {
   if(navigator.clipboard && window.isSecureContext) {await navigator.clipboard.writeText(text);return;}
-  const input=document.createElement("textarea");input.value=text;input.style.cssText="position:fixed;left:-9999px;top:0";
-  document.body.append(input);input.focus();input.select();
+  const focused = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  const selection = document.getSelection();
+  const ranges = selection ? Array.from({length:selection.rangeCount}, (_, index) => selection.getRangeAt(index).cloneRange()) : [];
+  const input=document.createElement("textarea");input.value=text;input.style.cssText="position:fixed;left:0;top:0;width:1px;height:1px;opacity:0;pointer-events:none";
+  (focused?.closest('[role="dialog"]') || document.body).append(input);input.focus({preventScroll:true});input.select();
   try {if(!document.execCommand("copy"))throw new Error(localStorage.getItem("aegis_lang")==="en"?"Copy failed. Select and copy the text manually.":"复制失败，请选中文本手动复制");}
-  finally {input.remove();}
+  finally {
+    input.remove();
+    focused?.focus({preventScroll:true});
+    if (selection) {selection.removeAllRanges();ranges.forEach(range => selection.addRange(range));}
+  }
 }
 
 export const flag = (code: string) =>

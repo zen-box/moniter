@@ -89,6 +89,8 @@ python scripts/release.py fetch-agents --output binaries
 
 在后台节点编辑页获取 Linux / Windows 安装或重装命令。在线节点也可获取命令，无需重置令牌。Linux 使用 systemd 管理 Agent，Windows 使用 SYSTEM 开机任务。
 
+后台生成的安装命令携带浏览器访问的主控地址，HTTPS 反向代理后的 Agent 使用 `wss://` 连接。也可通过 `AEGIS_PUBLIC_URL=https://monitor.example.com` 固定对外地址；此配置优先于安装命令携带的地址。
+
 Agent 使用权限受限的令牌文件和 WebSocket 首帧认证：
 
 ```bash
@@ -98,6 +100,8 @@ Agent 使用权限受限的令牌文件和 WebSocket 首帧认证：
 回环地址可用 `ws://`；其他明文内网连接需显式加 `--allow-insecure`。重置节点令牌后，旧凭据失效，需要更新 Agent 配置或重新安装。可从后台获取当前节点的安装命令。
 
 ## 监控、流量和成本
+
+延迟监控目标按地区折叠，每个地区可统一开关，也可展开单独调整运营商。快捷设置支持仅启用北上广（北京、上海、广东）、全部开关和按所选地区批量设置。“仅启用”会关闭其余目标；普通“启用所选”和“关闭所选”只影响选择的地区。批量开关保留目标 ID、节点指定目标和历史数据。
 
 - Agent 每秒上报，历史指标和目标结果按节点约每 60 秒落库。
 - **节点性能、延迟和目标历史保留最近 30 天**，过期数据自动清理。
@@ -122,6 +126,8 @@ SMTP、Telegram、Webhook 可独立启用，并支持发送测试通知。全局
 管理员密码使用 Argon2id 哈希，支持 TOTP。会话持久化、绑定登录时的网络，**30 天滑动有效期**：同浏览器重启无需重登。默认按网段绑定（IPv4 /24、IPv6 /64），同网段内的地址变化（DHCP 续租、IPv6 临时地址）不会掉线；来自其他网络的请求会被拒绝并记入安全审计，但不会吊销原会话，回到原网络后仍可继续使用。网络在 IPv4 与 IPv6 之间交替的环境可设 `AEGIS_SESSION_IP_BINDING=off`。退出撤销当前会话，改密码撤销全部会话。连续 5 次登录失败锁定来源 IP 15 分钟。
 
 TOTP 目前没有一次性恢复码，请备份验证器；改密码本身不会关闭两步验证。
+
+可在「网站设置 → 管理员账号」修改登录账号，需验证当前密码。账号支持 1–64 位字母、数字、点、下划线和连字符。修改后所有管理会话退出，使用新账号和原密码重新登录；已启用的两步验证继续生效。
 
 ## 主题中心
 
@@ -201,17 +207,17 @@ npm run build
 
 ## 版本与自动构建
 
-当前版本为 **0.1.1**，官方仓库为 `zen-box/moniter`。后台「网站设置 → 版本更新」显示当前版本、最新正式版和上次检查时间，可手动检查。主控启动后异步检查，此后每 6 小时检查 GitHub Releases；有新版本时后台顶栏出现入口。检查失败保留上次成功结果，60 秒内的重复检查合并。尚未发布正式版时显示「尚未发布正式版」。仅提示更新，不自动覆盖或重启程序。
+当前版本为 **0.1.2**，官方仓库为 `zen-box/moniter`。后台「网站设置 → 版本更新」显示当前版本、最新正式版和上次检查时间，可手动检查。主控启动后异步检查，此后每 6 小时检查 GitHub Releases；有新版本时后台顶栏出现入口。检查失败保留上次成功结果，60 秒内的重复检查合并。尚未发布正式版时显示「尚未发布正式版」。仅提示更新，不自动覆盖或重启程序。
 
 主控与 Agent **分别维护在两个分支，独立构建、独立发布**：`main` 仅含主控与前端源码，`agent` 仅含 Agent 源码。两者的 Cargo 工作区、锁文件和构建工作流分开维护。
 
 | 分支 | 标签 | 工作流 | 发布产物 |
 | --- | --- | --- | --- |
-| `main` | `v0.1.1` | `release-server.yml` | 主控 Linux amd64、Linux arm64、Windows amd64，各自包含 React 前端、地图、国旗与已发布的三平台 Agent 二进制 |
+| `main` | `v0.1.2` | `release-server.yml` | 主控 Linux amd64、Linux arm64、Windows amd64，各自包含 React 前端、地图、国旗与已发布的三平台 Agent 二进制 |
 | `agent` | `agent-v0.1.1` | `release-agent.yml` | Agent 的同样三种平台安装包 |
 
 Linux 采用原生 amd64 / arm64 runner 和 musl 静态链接，Windows 使用 MSVC。标签必须在对应分支创建，并与该分支的 `Cargo.toml` 版本一致。普通代码推送与 PR 不触发构建；只有推送 `v*` 或 `agent-v*` 标签才执行对应组件的测试、编译、打包和 Release 发布。更新 `main` 不编译 Agent，主控标签不触发 Agent 编译，Agent 标签也不触发主控编译。Agent Release 不标为主控最新版本，更新检测同时过滤 Agent、草稿与预发布标签。请分别提交和推送两个分支，不要把 `agent` 合并回 `main`。
 
-**本次 Agent 同步升级：先在 `agent` 分支发布 `agent-v0.1.1`，等 Agent Release 成功后，再在 `main` 分支发布 `v0.1.1`。** 主控从 `server/agent-version.txt` 指定的既有 Agent Release 下载三平台产物打包；缺少指定 Agent Release 时，主控发行流程会停止。以后只改主控时，更新 `server/Cargo.toml` 与前端包版本，再打主控标签；Agent 无变动无需发新版本。Agent 升级时，在 `agent` 分支发布新的 `agent-vX.Y.Z`，再按需修改 `main` 的 `agent-version.txt`。
+主控从 `server/agent-version.txt` 指定的既有 Agent Release 下载三平台产物打包；缺少指定 Agent Release 时，主控发行流程会停止。只改主控时，更新 `server/Cargo.toml`、前端包版本及对应锁文件，再打主控标签；Agent 无变动无需发新版本。Agent 升级时，先在 `agent` 分支发布新的 `agent-vX.Y.Z`，等 Agent Release 成功后，再按需修改 `main` 的 `agent-version.txt` 并发布主控。
 
-发布文件命名为 `moniter-0.1.1-<平台>.tar.gz`（Windows 为 `.zip`），Agent 为 `moniter-agent-0.1.1-<平台>`。主控解压后在该目录运行 `./moniter` 或 `moniter.exe`；Agent 可运行 `./moniter-agent`。包内 `release.json` 记录组件、平台和所含 Agent 版本。发布包采用目录白名单，不含 `data`、日志、凭据或用户上传的主题。
+发布文件命名为 `moniter-0.1.2-<平台>.tar.gz`（Windows 为 `.zip`），Agent 为 `moniter-agent-0.1.1-<平台>`。主控解压后在该目录运行 `./moniter` 或 `moniter.exe`；Agent 可运行 `./moniter-agent`。包内 `release.json` 记录组件、平台和所含 Agent 版本。发布包采用目录白名单，不含 `data`、日志、凭据或用户上传的主题。

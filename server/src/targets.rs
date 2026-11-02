@@ -2,6 +2,30 @@
 use rusqlite::{Connection, params};
 use std::collections::{HashMap, HashSet};
 
+/// Change switches together; target identities, node selections and history stay intact.
+pub fn set_enabled(conn: &mut Connection, ids: &[i64], enabled: bool, exclusive: bool, ip: &str) -> rusqlite::Result<usize> {
+    let selected: HashSet<i64> = ids.iter().copied().collect();
+    let tx = conn.transaction()?;
+    let existing: Vec<(i64, bool)> = tx.prepare("SELECT id,enabled FROM monitor_targets")?
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?.collect::<rusqlite::Result<_>>()?;
+    if selected.is_empty() || selected.iter().any(|id| !existing.iter().any(|(current, _)| current == id)) {
+        return Err(rusqlite::Error::QueryReturnedNoRows);
+    }
+    let mut changed = 0;
+    {
+        let mut update = tx.prepare("UPDATE monitor_targets SET enabled=?2 WHERE id=?1")?;
+        for (id, was_enabled) in existing {
+            let next = if selected.contains(&id) { enabled } else if exclusive { false } else { continue };
+            if next != was_enabled { changed += update.execute(params![id, next])?; }
+        }
+    }
+    let mode = if exclusive { "仅启用所选" } else if enabled { "启用所选" } else { "关闭所选" };
+    tx.execute("INSERT INTO audit_logs(action,ip) VALUES(?1,?2)",
+        params![format!("批量设置监控目标：{mode} {} 项，变更 {changed} 项", selected.len()), ip])?;
+    tx.commit()?;
+    Ok(changed)
+}
+
 pub fn reconcile(conn: &Connection, aliases: &HashMap<i64,i64>) -> rusqlite::Result<usize> {
     let valid: HashSet<i64> = conn.prepare("SELECT id FROM monitor_targets")?.query_map([],|r|r.get(0))?.collect::<rusqlite::Result<_>>()?;
     let nodes: Vec<(String,String)> = conn.prepare("SELECT id,monitor_targets FROM servers WHERE monitor_mode='selected'")?
@@ -38,6 +62,26 @@ pub fn reset(conn: &mut Connection) -> rusqlite::Result<usize> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn batch_switches_are_atomic_and_preserve_node_selections() {
+        let db = crate::db::init_db(":memory:").unwrap();
+        let mut c = db.lock().unwrap();
+        let selected: Vec<i64> = c.prepare("SELECT id FROM monitor_targets WHERE region IN ('北京','上海','广东')")
+            .unwrap().query_map([], |row| row.get(0)).unwrap().collect::<rusqlite::Result<_>>().unwrap();
+        assert_eq!(selected.len(), 9);
+        let selection = selected[0].to_string();
+        c.execute("INSERT INTO servers(id,token,name,region,region_name,provider,monitor_enabled,monitor_mode,monitor_targets) VALUES('test','token','test','','','',1,'selected',?1)", [&selection]).unwrap();
+        assert_eq!(set_enabled(&mut c, &selected, true, true, "test").unwrap(), 84);
+        assert_eq!(c.query_row("SELECT COUNT(*) FROM monitor_targets WHERE enabled=1", [], |row| row.get::<_,i64>(0)).unwrap(), 9);
+        assert_eq!(c.query_row("SELECT monitor_targets FROM servers WHERE id='test'", [], |row| row.get::<_,String>(0)).unwrap(), selection);
+        assert_eq!(set_enabled(&mut c, &selected[..3], false, false, "test").unwrap(), 3);
+        assert_eq!(set_enabled(&mut c, &[selected[0], selected[0]], true, false, "test").unwrap(), 1);
+        assert!(set_enabled(&mut c, &[selected[0], i64::MAX], false, false, "test").is_err());
+        assert_eq!(c.query_row("SELECT enabled FROM monitor_targets WHERE id=?1", [selected[0]], |row| row.get::<_,bool>(0)).unwrap(), true);
+        c.execute_batch("CREATE TRIGGER fail_target_audit BEFORE INSERT ON audit_logs BEGIN SELECT RAISE(ABORT,'test failure'); END;").unwrap();
+        assert!(set_enabled(&mut c, &[selected[0]], false, false, "test").is_err());
+        assert_eq!(c.query_row("SELECT enabled FROM monitor_targets WHERE id=?1", [selected[0]], |row| row.get::<_,bool>(0)).unwrap(), true);
+    }
     #[test]
     fn repeated_resets_preserve_identity_and_selected_nodes() {
         let db=crate::db::init_db(":memory:").unwrap();let mut c=db.lock().unwrap();

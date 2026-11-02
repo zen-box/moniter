@@ -118,9 +118,11 @@ pub async fn harden_request(mut request: Request, next: Next) -> Response {
     response
 }
 
-pub fn public_base_url(headers: &HeaderMap) -> Result<String, &'static str> {
+pub fn public_base_url(headers: &HeaderMap, install_origin: Option<&str>) -> Result<String, &'static str> {
     let origin = if let Ok(configured) = std::env::var("AEGIS_PUBLIC_URL") {
         configured
+    } else if let Some(origin) = install_origin {
+        origin.to_string()
     } else {
         let host = headers.get(header::HOST).and_then(|v| v.to_str().ok()).ok_or("缺少主控地址")?;
         let authority = host.parse::<axum::http::uri::Authority>().map_err(|_| "主控地址无效")?;
@@ -132,8 +134,13 @@ pub fn public_base_url(headers: &HeaderMap) -> Result<String, &'static str> {
         };
         format!("{scheme}://{host}")
     };
-    let url = reqwest::Url::parse(&origin).map_err(|_| "AEGIS_PUBLIC_URL 无效")?;
+    validate_public_origin(&origin)
+}
+
+fn validate_public_origin(origin: &str) -> Result<String, &'static str> {
+    let url = reqwest::Url::parse(origin).map_err(|_| "主控地址无效")?;
     if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none()
+        || !url.host_str().is_some_and(|host| host.bytes().all(|c| c.is_ascii_alphanumeric() || b".-:[]".contains(&c)))
         || !url.username().is_empty() || url.password().is_some() || url.query().is_some()
         || url.fragment().is_some() || url.path() != "/" {
         return Err("主控地址必须是 http(s) 来源地址，不能包含用户名、路径或参数");
@@ -201,7 +208,15 @@ mod tests {
         assert_eq!(shell_quote("x'$(id)"), "'x'\\''$(id)'");
         let mut headers = HeaderMap::new();
         headers.insert(header::HOST, HeaderValue::from_static("bad\"host"));
-        assert!(public_base_url(&headers).is_err());
+        assert!(public_base_url(&headers, None).is_err());
+    }
+    #[test]
+    fn install_origin_preserves_https_and_rejects_shell_or_url_payloads() {
+        assert_eq!(validate_public_origin("https://status.example.com:8443").unwrap(), "https://status.example.com:8443");
+        assert_eq!(validate_public_origin("http://127.0.0.1:8080").unwrap(), "http://127.0.0.1:8080");
+        for origin in ["file:///etc/passwd", "https://user:pass@example.com", "https://example.com/path", "https://example.com?x=1", "https://example.com#x", "https://example.com';$(id)"] {
+            assert!(validate_public_origin(origin).is_err(), "invalid origin: {origin}");
+        }
     }
     #[test]
     fn only_public_reads_are_shared_with_themes() {

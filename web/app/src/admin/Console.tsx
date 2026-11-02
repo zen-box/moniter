@@ -87,7 +87,6 @@ import {
   requestError,
   type CostNode,
   type ServerNode,
-  type Target as MonitorTarget,
 } from "../lib";
 
 
@@ -99,6 +98,8 @@ import { ConfirmProvider, useConfirm } from "./ConfirmProvider";
 import { AlertRuleFields, type ResourceRules } from "./AlertRuleFields";
 import {englishAlert, englishMessage} from "../messages";
 import { InitialPasswordNotice } from "./InitialPasswordNotice";
+import { AccountSettings } from "./AccountSettings";
+import { TargetsPage } from "./TargetsPage";
 
 
 import {useLanguage,useTheme,useSiteName,initialServers} from "../runtime";
@@ -166,7 +167,7 @@ function Brand({
 
 function LoginPage({ siteName }: { siteName: string }) {
   const { language, setLanguage } = useLanguage();
-  const [user, setUser] = useState("admin");
+  const [user, setUser] = useState("");
   const [password, setPassword] = useState("");
   const [totp, setTotp] = useState("");
   const [needTotp, setNeedTotp] = useState(false);
@@ -236,6 +237,7 @@ function LoginPage({ siteName }: { siteName: string }) {
               value={user}
               onValueChange={setUser}
               autoComplete="username"
+              isRequired
               variant="bordered"
             />
             <Input
@@ -244,6 +246,7 @@ function LoginPage({ siteName }: { siteName: string }) {
               onValueChange={setPassword}
               type="password"
               autoComplete="current-password"
+              isRequired
               variant="bordered"
             />
             <div hidden={!needTotp}>
@@ -1273,269 +1276,6 @@ function NodesPage({
 }
 
 
-function TargetModal({
-  target,
-  disclosure,
-  onSaved,
-}: {
-  target: MonitorTarget | null;
-  disclosure: ReturnType<typeof useDisclosure>;
-  onSaved: () => void;
-}) {
-  const { language, t } = useLanguage();
-  const [form, setForm] = useState<Partial<MonitorTarget>>({});
-  const [busy, setBusy] = useState(false);
-  const [error, setError] = useState("");
-  useEffect(() => {
-    setError("");
-    setForm(
-      target
-        ? { ...target }
-        : {
-            name: "",
-            host: "",
-            port: 80,
-            carrier: "ct",
-            region: "河北",
-            enabled: true,
-          },
-    );
-  }, [target, disclosure.isOpen]);
-  const set = (key: string, value: any) =>
-    setForm((f) => ({ ...f, [key]: value }));
-  const save = async () => {
-    if (busy) return;
-    setBusy(true); setError("");
-    try {
-    const result = await API("/api/v1/admin/targets/save", {
-      method: "POST",
-      body: JSON.stringify({
-        id: target?.id,
-        name: form.name,
-        host: form.host,
-        port: Number(form.port || 80),
-        carrier: form.carrier,
-        region: form.region,
-        enabled: form.enabled !== false,
-      }),
-    });
-    if (!result.success) throw new Error(result.message || (language === "zh" ? "保存失败" : "Save failed"));
-    onSaved();
-    } catch (error) { setError(requestError(error)); }
-    finally { setBusy(false); }
-  };
-  return (
-    <Modal isOpen={disclosure.isOpen} onOpenChange={() => { if (!busy) disclosure.onOpenChange(); }} isDismissable={!busy} isKeyboardDismissDisabled={busy} hideCloseButton={busy} scrollBehavior="inside">
-      <ModalContent>
-        <ModalHeader>{target ? (language === "zh" ? "编辑监控目标" : "Edit target") : (language === "zh" ? "添加监控目标" : "Add target")}</ModalHeader>
-        <ModalBody>
-          {error && <Alert color="danger" title={error} />}
-          <div className="form-grid">
-            <Input
-              label={language === "zh" ? "目标名称" : "Target name"}
-              value={form.name || ""}
-              onValueChange={(v) => set("name", v)}
-            />
-            <Input
-              label={language === "zh" ? "IP / 域名" : "IP / domain"}
-              value={form.host || ""}
-              onValueChange={(v) => set("host", v)}
-            />
-            <Input
-              label={t("targets.port", "端口")}
-              type="number"
-              value={String(form.port || 80)}
-              onValueChange={(v) => set("port", v)}
-            />
-            <Input
-              label={t("common.region", "地区")}
-              value={form.region || ""}
-              onValueChange={(v) => set("region", v)}
-            />
-            <Select
-              label={t("targets.carrier", "运营商")}
-              selectedKeys={[form.carrier || "ct"]}
-              onSelectionChange={(keys) => set("carrier", String([...keys][0]))}
-            >
-              <SelectItem key="ct">{language === "zh" ? "电信" : "China Telecom"}</SelectItem>
-              <SelectItem key="cu">{language === "zh" ? "联通" : "China Unicom"}</SelectItem>
-              <SelectItem key="cm">{language === "zh" ? "移动" : "China Mobile"}</SelectItem>
-              <SelectItem key="intl">{language === "zh" ? "国际" : "International"}</SelectItem>
-            </Select>
-            <Switch
-              isSelected={form.enabled !== false}
-              onValueChange={(v) => set("enabled", v)}
-            >
-              {language === "zh" ? "启用目标" : "Enable target"}
-            </Switch>
-          </div>
-        </ModalBody>
-        <ModalFooter>
-          <Button variant="flat" onPress={disclosure.onClose} isDisabled={busy}>
-            {language === "zh" ? "取消" : "Cancel"}
-          </Button>
-          <Button color="primary" onPress={save} isLoading={busy} isDisabled={!form.name?.trim() || !form.host?.trim()}>
-            {t("common.save", "保存")}
-          </Button>
-        </ModalFooter>
-      </ModalContent>
-    </Modal>
-  );
-}
-
-function TargetsPage({ onReload }: { onReload: () => void }) {
-  const { language, t } = useLanguage();
-  const confirmAction=useConfirm();
-  const { data: targets, error: loadError, reload: load } = useAdminResource<MonitorTarget[]>("/api/v1/admin/targets", []);
-  const [error, setError] = useState("");
-  const [notice,setNotice]=useState("");
-  const [query,setQuery]=useState("");const [page,setPage]=useState(1);
-  const filtered=targets.filter(target=>`${target.name} ${target.host} ${target.region}`.toLowerCase().includes(query.toLowerCase()));
-  const pages=Math.max(1,Math.ceil(filtered.length/15));
-  useEffect(()=>setPage(current=>Math.min(current,pages)),[pages]);
-  const toggle=async(target:MonitorTarget,value:boolean)=>{setBusy(true);setError("");try{const result=await API("/api/v1/admin/targets/save",{method:"POST",body:JSON.stringify({...target,enabled:value})});if(!result.success)throw new Error(result.message);await load();onReload();}catch(error){setError(requestError(error))}finally{setBusy(false)}};
-
-  const [busy, setBusy] = useState(false);
-  const edit = useDisclosure();
-  const [current, setCurrent] = useState<MonitorTarget | null>(null);
-  const reset = async () => {
-    if (!await confirmAction({title:t("targets.reset","重置默认目标"),body:t("targets.confirmReset","确定恢复系统默认的延迟监控目标？当前自定义目标将被替换。"),danger:true})) return;
-    setBusy(true);
-    setError("");
-    try {
-      const result = await API("/api/v1/admin/targets/reset_defaults", { method: "POST" });
-      if (!result.success) throw new Error(result.message || (language === "zh" ? "重置失败" : "Reset failed"));
-      setNotice(language==="zh"?`已恢复默认目标；${result.paused_nodes||0} 个没有剩余指定目标的节点已暂停探测。`:`Defaults restored. ${result.paused_nodes||0} nodes with no selected targets were paused.`);await load(); onReload();
-    } catch (error) { setError(requestError(error)); }
-    finally { setBusy(false); }
-  };
-  const removeTarget = async (id: number) => {
-    if (!await confirmAction({title:language==="zh"?"删除目标":"Delete target",body:language==="zh"?`删除「${targets.find(t=>t.id===id)?.name||id}」？仅选择此目标的节点将暂停探测。`:`Delete "${targets.find(t=>t.id===id)?.name||id}"? Nodes with no remaining selected targets will be paused.`,danger:true})) return;
-    setBusy(true); setError("");
-    try {
-      const result = await API("/api/v1/admin/targets/delete", { method: "POST", body: JSON.stringify({ id }) });
-      if (!result.success) throw new Error(result.message || (language === "zh" ? "删除失败" : "Delete failed"));
-      if(result.paused_nodes)setNotice(language==="zh"?`${result.paused_nodes} 个没有剩余指定目标的节点已暂停探测`:`${result.paused_nodes} nodes with no remaining targets were paused`);await load();onReload();
-    } catch (error) { setError(requestError(error)); }
-    finally { setBusy(false); }
-  };
-  const saved = () => {
-    edit.onClose();
-    void load();
-    onReload();
-  };
-  return (
-    <div className="page-stack">
-      {loadError && <RequestFailure error={loadError} retry={load} />}
-      {error && <Alert color="danger" title={error} />}{notice&&<Alert color="warning" title={notice}/>}
-      <div className="page-toolbar">
-        <div>
-          <h2>{t("page.targets", "延迟监控目标")}</h2>
-          <p>{t("page.targetsHint", "Agent 按这些地址探测 TCP 延迟，结果显示在节点详情中。")}</p>
-        </div>
-        <div className="toolbar-actions">
-          <Button variant="flat" onPress={reset} isLoading={busy}>
-            {t("targets.reset", "重置默认目标")}
-          </Button>
-          <Button
-            color="primary"
-            startContent={<Plus size={16} />}
-            onPress={() => {
-              setCurrent(null);
-              edit.onOpen();
-            }}
-          >
-            {t("targets.add", "添加目标")}
-          </Button>
-        </div>
-      </div>
-      <Card className="panel-card">
-        <CardBody className="p-0">
-          <div className="table-toolbar"><Input aria-label={language==="zh"?"搜索监控目标":"Search targets"} placeholder={language==="zh"?"搜索名称、地址或地区":"Search name, host or region"} value={query} onValueChange={value=>{setQuery(value);setPage(1)}} startContent={<Search size={15}/>}/></div>
-          <div className="table-scroll">
-            <table className="data-table">
-              <thead>
-                <tr>
-                  <th>{t("common.name", "名称")}</th>
-                  <th>{t("targets.host", "主机")}</th>
-                  <th>{t("targets.port", "端口")}</th>
-                  <th>{t("targets.carrier", "运营商")}</th>
-                  <th>{t("common.region", "地区")}</th>
-                  <th>{t("common.status", "状态")}</th>
-                  <th />
-                </tr>
-              </thead>
-              <tbody>
-                {filtered.slice((page-1)*15,page*15).map((target) => (
-                  <tr key={target.id}>
-                    <td>
-                      <strong>{target.name}</strong>
-                    </td>
-                    <td>
-                      <Code>{target.host}</Code>
-                    </td>
-                    <td>{target.port}</td>
-                    <td>
-                      {(
-                        {
-                          ct: language === "zh" ? "电信" : "China Telecom",
-                          cu: language === "zh" ? "联通" : "China Unicom",
-                          cm: language === "zh" ? "移动" : "China Mobile",
-                          intl: language === "zh" ? "国际" : "International",
-                        } as Record<string, string>
-                      )[target.carrier] || "—"}
-                    </td>
-                    <td>
-                      <img className="flag-mini" src={flag("cn")} alt="" />
-                      {target.region}
-                    </td>
-                    <td>
-                      <Switch size="sm" aria-label={`${target.name} ${t("common.enabled","已启用")}`} isSelected={target.enabled} isDisabled={busy} onValueChange={value=>void toggle(target,value)}/>
-
-                    </td>
-                    <td>
-                      <div className="row-actions">
-                        <Button
-                          isIconOnly
-                          size="sm"
-                          variant="light"
-                          onPress={() => {
-                            setCurrent(target);
-                            edit.onOpen();
-                          }}
-                        >
-                          <Pencil size={15} />
-                        </Button>
-                        <Button
-                          isIconOnly
-                          size="sm"
-                          variant="light"
-                          color="danger"
-                          onPress={() => removeTarget(target.id)}
-                          isDisabled={busy}
-                        >
-                          <Trash2 size={15} />
-                        </Button>
-                      </div>
-                    </td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-            {!targets.length && (
-              <EmptyState
-                title={language === "zh" ? "还没有监控目标" : "No monitor targets"}
-                description={language === "zh" ? "恢复默认目标或添加一个自定义地址。" : "Restore the defaults or add a custom endpoint."}
-              />
-            )}
-          </div><div className="table-footer"><span>{language==="zh"?`${filtered.length} 个目标`:`${filtered.length} targets`}</span><Pagination total={pages} page={page} onChange={setPage} showControls size="sm"/></div>
-        </CardBody>
-      </Card>
-      <TargetModal target={current} disclosure={edit} onSaved={saved} />
-    </div>
-  );
-}
-
 function CostsPage() {
   const { language, t } = useLanguage();
   const { data: nodes, error, loading, reload } = useAdminResource<CostNode[]>("/api/v1/admin/costs", []);
@@ -2066,6 +1806,10 @@ function auditEnglish(action:string){
  const exact:Record<string,string>={"管理员登录失败":"Admin sign-in failed","两步验证码错误":"Invalid two-factor code","管理员修改登录密码":"Admin password changed","更新告警通知配置":"Alert notification settings updated","启用两步验证 (2FA)":"Two-factor authentication enabled","关闭两步验证 (2FA)":"Two-factor authentication disabled"};
  if(exact[action])return exact[action];
  return action.replace(/^管理员【(.*)】登录成功$/,"Administrator $1 signed in")
+ .replace(/^管理员账号由【(.*)】修改为【(.*)】$/,"Administrator username changed from $1 to $2")
+ .replace(/^批量设置监控目标：仅启用所选 (\d+) 项，变更 (\d+) 项$/,"Enabled only $1 selected monitoring targets; $2 changed")
+ .replace(/^批量设置监控目标：启用所选 (\d+) 项，变更 (\d+) 项$/,"Enabled $1 selected monitoring targets; $2 changed")
+ .replace(/^批量设置监控目标：关闭所选 (\d+) 项，变更 (\d+) 项$/,"Disabled $1 selected monitoring targets; $2 changed")
  .replace(/^添加新服务器节点【(.*)】$/,"Added node: $1").replace(/^编辑节点【(.*)】配置$/,"Updated node: $1")
  .replace(/^删除服务器节点【(.*)】$/,"Deleted node: $1").replace(/^重置节点【(.*)】的令牌$/,"Reset token for node: $1")
  .replace(/^修改网站名称为【(.*)】$/,"Site renamed to: $1").replace(/^上传主题【(.*)】$/,"Installed theme: $1")
@@ -2263,6 +2007,8 @@ function SettingsPage({
           </section>
           <Divider />
           <VersionSettings />
+          <Divider />
+          <AccountSettings />
           <Divider />
           <section className="settings-row" id="admin-password" ref={passwordSection}>
             <div className="settings-row-copy">

@@ -13,21 +13,24 @@ mkdir -p "$INSTALL_DIR"
 umask 077
 STAGING=$(mktemp -d "$INSTALL_DIR/.update.XXXXXX")
 CHANGED=0
-HAD_BINARY=0; HAD_TOKEN=0; HAD_UNIT=0; WAS_ACTIVE=0
+HAD_BINARY=0; HAD_TOKEN=0; HAD_UNIT=0; WAS_ACTIVE=0; WAS_ENABLED=0
 [[ ! -f "$INSTALL_DIR/aegis-agent" ]] || { cp -p "$INSTALL_DIR/aegis-agent" "$STAGING/previous"; HAD_BINARY=1; }
 [[ ! -f "$TOKEN_FILE" ]] || { cp -p "$TOKEN_FILE" "$STAGING/token.previous"; HAD_TOKEN=1; }
 [[ ! -f "$UNIT" ]] || { cp -p "$UNIT" "$STAGING/unit.previous"; HAD_UNIT=1; }
 systemctl is-active --quiet aegis-agent && WAS_ACTIVE=1
+systemctl is-enabled --quiet aegis-agent && WAS_ENABLED=1
 cleanup() {
   result=$?
   if [[ $result -ne 0 && $CHANGED -eq 1 ]]; then
     systemctl stop aegis-agent >/dev/null 2>&1 || true
+    [[ $WAS_ENABLED -eq 1 ]] || systemctl disable aegis-agent >/dev/null 2>&1 || true
     if [[ $HAD_BINARY -eq 1 ]]; then mv -f "$STAGING/previous" "$INSTALL_DIR/aegis-agent"; else rm -f "$INSTALL_DIR/aegis-agent"; fi
     if [[ $HAD_TOKEN -eq 1 ]]; then mv -f "$STAGING/token.previous" "$TOKEN_FILE"; else rm -f "$TOKEN_FILE"; fi
     if [[ $HAD_UNIT -eq 1 ]]; then mv -f "$STAGING/unit.previous" "$UNIT"; else rm -f "$UNIT"; fi
     systemctl daemon-reload || true
     [[ $WAS_ACTIVE -ne 1 ]] || systemctl start aegis-agent || true
-    echo '更新失败，已恢复更新前的 Agent 和配置' >&2
+    if [[ $HAD_UNIT -eq 1 ]]; then echo '更新失败，已恢复更新前的 Agent 和配置' >&2
+    else echo '安装失败，已撤销本次安装；启动错误见上方日志' >&2; fi
   fi
   rm -rf -- "$STAGING"
   exit "$result"
@@ -63,6 +66,9 @@ systemctl daemon-reload
 systemctl enable aegis-agent >/dev/null
 systemctl restart aegis-agent
 sleep 2
-systemctl is-active --quiet aegis-agent
+if ! systemctl is-active --quiet aegis-agent; then
+  journalctl -u aegis-agent -n 20 --no-pager >&2 || true
+  exit 1
+fi
 CHANGED=0
 echo '安装完成，Agent 已启动并设置开机自启'

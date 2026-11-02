@@ -476,6 +476,7 @@ async fn main() {
     // 3. 管理后台受保护路由组：统一走 require_admin 中间件
     let admin_protected = Router::new()
         .route("/api/v1/admin/status", get(api_admin_status))
+        .route("/api/v1/admin/account", get(api_admin_account).post(api_admin_change_username))
         .route(
             "/api/v1/admin/site-settings",
             get(api_admin_site_settings).post(api_admin_save_site_settings),
@@ -523,6 +524,7 @@ async fn main() {
         .route("/api/v1/admin/2fa/disable", post(api_admin_2fa_disable))
         .route("/api/v1/admin/targets", get(api_admin_get_targets))
         .route("/api/v1/admin/targets/save", post(api_admin_save_target))
+        .route("/api/v1/admin/targets/batch", post(api_admin_batch_targets))
         .route(
             "/api/v1/admin/targets/reset_defaults",
             post(api_admin_reset_targets),
@@ -966,6 +968,7 @@ fn is_valid_theme_id(id: &str) -> bool {
 #[derive(Deserialize)]
 struct InstallQuery {
     token: Option<String>,
+    origin: Option<String>,
 }
 
 fn install_token(query_token: Option<String>, headers: &HeaderMap) -> String {
@@ -990,8 +993,16 @@ fn installation_values(ctx: &AppContext, q: InstallQuery, headers: &HeaderMap) -
     if lookup_server_by_token(ctx, &token).is_none() {
         return Err((StatusCode::UNAUTHORIZED, "# 节点令牌无效或已重置\n").into_response());
     }
-    let base = security::public_base_url(headers)
+    // An authenticated installer may explicitly carry the URL seen in the admin
+    // browser. This avoids inferring TLS from an untrusted reverse proxy header.
+    let base = security::public_base_url(headers, q.origin.as_deref())
         .map_err(|error| (StatusCode::BAD_REQUEST, format!("# {error}\n")).into_response())?;
+    let url = reqwest::Url::parse(&base).unwrap();
+    let loopback = url.host_str().is_some_and(|host| host == "localhost"
+        || host.trim_matches(['[', ']']).parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback()));
+    if url.scheme() == "http" && !loopback {
+        return Err((StatusCode::BAD_REQUEST, "# 远程 Agent 需要 HTTPS 主控地址，请从 HTTPS 后台重新复制安装命令，或设置 AEGIS_PUBLIC_URL 后重启主控。\n").into_response());
+    }
     let ws_base = base.replacen("https://", "wss://", 1).replacen("http://", "ws://", 1);
     Ok((token, base, ws_base))
 }
@@ -2351,18 +2362,18 @@ async fn api_admin_login(
         });
     }
 
-    let stored: Option<(String, String)> = {
+    let stored: Option<(String, String, i64, String)> = {
         let conn = ctx.db.lock().unwrap();
         conn.query_row(
-            "SELECT username, password_hash FROM admin WHERE username = ?1",
+            "SELECT username, password_hash, totp_enabled, totp_secret FROM admin WHERE id = 1 AND username = ?1",
             [&payload.username],
-            |r| Ok((r.get(0)?, r.get(1)?)),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)),
         )
         .ok()
     };
 
     // 用户不存在时也走一遍哈希校验，避免通过响应时间判断用户名是否存在
-    let hash = stored.as_ref().map(|(_, hash)| hash.clone()).unwrap_or_else(||
+    let hash = stored.as_ref().map(|(_, hash, _, _)| hash.clone()).unwrap_or_else(||
         "$argon2id$v=19$m=19456,t=2,p=1$c29tZXNhbHRzb21lc2FsdA$0000000000000000000000000000000000000000000".into());
     let password = payload.password.clone();
     let verified = tokio::task::spawn_blocking(move || auth::verify_password(&password, &hash))
@@ -2386,15 +2397,7 @@ async fn api_admin_login(
     }
 
     // 密码正确 → 若启用了两步验证，还要校验 TOTP
-    let (totp_enabled, totp_secret): (i64, String) = {
-        let conn = ctx.db.lock().unwrap();
-        conn.query_row(
-            "SELECT totp_enabled, totp_secret FROM admin WHERE username = 'admin'",
-            [],
-            |r| Ok((r.get(0)?, r.get(1)?)),
-        )
-        .unwrap_or((0, String::new()))
-    };
+    let (username, _, totp_enabled, totp_secret) = stored.unwrap();
 
     if totp_enabled != 0 {
         let code = payload
@@ -2414,7 +2417,7 @@ async fn api_admin_login(
             });
         }
 
-        let valid = build_totp(&totp_secret, "admin")
+        let valid = build_totp(&totp_secret, &username)
             .map(|t| t.check_current(&code).unwrap_or(false))
             .unwrap_or(false);
 
@@ -3241,6 +3244,79 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn renamed_admin_keeps_password_and_two_factor_and_can_manage_security() {
+        let ctx = context();
+        let password = "Fixture-password-42!";
+        let secret = "JBSWY3DPEHPK3PXPJBSWY3DPEHPK3PX";
+        ctx.db.lock().unwrap().execute(
+            "UPDATE admin SET password_hash=?1,totp_enabled=1,totp_secret=?2 WHERE id=1",
+            rusqlite::params![auth::hash_password(password), secret],
+        ).unwrap();
+        let session = ctx.sessions.issue("127.0.0.1").unwrap();
+        let result = api_admin_change_username(State(ctx.clone()), HeaderMap::new(), Json(ChangeUsernameReq {
+            username: "owner.ops".into(), password: password.into(),
+        })).await.0;
+        assert_eq!(result["success"], true);
+        assert!(!ctx.sessions.verify(&session, "127.0.0.1"));
+        assert_eq!(api_admin_account(State(ctx.clone())).await.unwrap().0["username"], "owner.ops");
+        assert!(api_admin_2fa_status(State(ctx.clone())).await.0.enabled);
+        assert!(db::password_change_recommended(&ctx.db.lock().unwrap()).unwrap(), "renaming is not a password change");
+        let address = ConnectInfo("127.0.0.1:12345".parse().unwrap());
+        for (username, code, success, need_totp) in [
+            ("admin", None, false, false),
+            ("owner.ops", None, false, true),
+            ("owner.ops", Some(build_totp(secret, "owner.ops").unwrap().generate_current().unwrap()), true, false),
+        ] {
+            let result = api_admin_login(State(ctx.clone()), address, HeaderMap::new(), Json(AdminLoginReq {
+                username: username.into(), password: password.into(), totp_code: code,
+            })).await.0;
+            assert_eq!(result.success, success);
+            assert_eq!(result.need_totp.unwrap_or(false), need_totp);
+        }
+        let disabled = api_admin_2fa_disable(State(ctx.clone()), HeaderMap::new(), Json(Disable2FAReq {password: password.into()})).await.0;
+        assert_eq!(disabled["success"], true);
+        assert!(!api_admin_2fa_status(State(ctx.clone())).await.0.enabled);
+        let setup = api_admin_2fa_setup(State(ctx.clone())).await.0;
+        assert_eq!(setup["success"], true);
+        assert!(setup["url"].as_str().unwrap().contains("owner.ops"));
+        let fresh_secret = setup["secret"].as_str().unwrap();
+        let enabled = api_admin_2fa_enable(State(ctx.clone()), HeaderMap::new(), Json(Enable2FAReq {
+            secret: fresh_secret.into(), code: build_totp(fresh_secret, "owner.ops").unwrap().generate_current().unwrap(),
+        })).await.0;
+        assert_eq!(enabled["success"], true);
+        assert!(api_admin_2fa_status(State(ctx.clone())).await.0.enabled);
+        let changed = api_admin_change_password(State(ctx.clone()), HeaderMap::new(), Json(ChangePasswordReq {
+            old_password: password.into(), new_password: "Fixture-new-password-73!".into(),
+        })).await.0;
+        assert_eq!(changed["success"], true);
+    }
+
+    #[tokio::test]
+    async fn rejected_or_failed_username_changes_preserve_credentials_and_sessions() {
+        let ctx = context();
+        let password = "Fixture-password-42!";
+        ctx.db.lock().unwrap().execute("UPDATE admin SET password_hash=?1 WHERE id=1", [auth::hash_password(password)]).unwrap();
+        let session = ctx.sessions.issue("127.0.0.1").unwrap();
+        for (username, current) in [("", password), ("with spaces", password), ("invalid/name", password),
+            ("admin", password), ("owner", "incorrect-password"), (&"a".repeat(65), password)] {
+            let result = api_admin_change_username(State(ctx.clone()), HeaderMap::new(), Json(ChangeUsernameReq {
+                username: username.into(), password: current.into(),
+            })).await.0;
+            assert_eq!(result["success"], false);
+            assert_eq!(read_admin_username(&ctx).unwrap(), "admin");
+            assert!(ctx.sessions.verify(&session, "127.0.0.1"));
+        }
+        ctx.db.lock().unwrap().execute_batch("CREATE TRIGGER fail_account_audit BEFORE INSERT ON audit_logs
+            BEGIN SELECT RAISE(ABORT,'test failure'); END;").unwrap();
+        let result = api_admin_change_username(State(ctx.clone()), HeaderMap::new(), Json(ChangeUsernameReq {
+            username: "owner".into(), password: password.into(),
+        })).await.0;
+        assert_eq!(result["success"], false);
+        assert_eq!(read_admin_username(&ctx).unwrap(), "admin");
+        assert!(ctx.sessions.verify(&session, "127.0.0.1"));
+    }
+
+    #[tokio::test]
     async fn password_reminder_clears_only_after_a_completed_password_change() {
         let ctx = context();
         let old = "Fixture-initial-password-42!";
@@ -3385,6 +3461,67 @@ async fn api_admin_switch_theme(
 }
 
 #[derive(Deserialize)]
+struct ChangeUsernameReq {
+    username: String,
+    password: String,
+}
+
+fn read_admin_username(ctx: &AppContext) -> rusqlite::Result<String> {
+    ctx.db.lock().unwrap().query_row("SELECT username FROM admin WHERE id = 1", [], |row| row.get(0))
+}
+
+async fn api_admin_account(State(ctx): State<AppContext>) -> Result<Json<serde_json::Value>, StatusCode> {
+    let username = read_admin_username(&ctx).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+    Ok(Json(serde_json::json!({ "username": username })))
+}
+
+async fn api_admin_change_username(
+    State(ctx): State<AppContext>,
+    headers: HeaderMap,
+    Json(p): Json<ChangeUsernameReq>,
+) -> Json<serde_json::Value> {
+    let username = p.username.trim();
+    if username.is_empty() || username.len() > 64
+        || !username.bytes().all(|c| c.is_ascii_alphanumeric() || b"._-".contains(&c)) {
+        return Json(serde_json::json!({ "success": false, "message": "账号需为 1–64 位字母、数字、点、下划线或连字符" }));
+    }
+    let current: Option<(String, String)> = ctx.db.lock().unwrap().query_row(
+        "SELECT username, password_hash FROM admin WHERE id = 1", [],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    ).ok();
+    let Some((previous, hash)) = current else {
+        return Json(serde_json::json!({ "success": false, "message": "账号保存失败，请稍后重试" }));
+    };
+    if p.password.len() > 1024 || !auth::verify_password(&p.password, &hash) {
+        return Json(serde_json::json!({ "success": false, "message": "当前密码错误" }));
+    }
+    if username == previous {
+        return Json(serde_json::json!({ "success": false, "message": "新账号不能与当前账号相同" }));
+    }
+    let saved = (|| -> rusqlite::Result<bool> {
+        let mut conn = ctx.db.lock().unwrap();
+        let tx = conn.transaction()?;
+        let changed = tx.execute(
+            "UPDATE admin SET username=?1, updated_at=CURRENT_TIMESTAMP WHERE id=1 AND username=?2 AND password_hash=?3",
+            rusqlite::params![username, previous, hash],
+        )?;
+        if changed != 1 { return Ok(false); }
+        tx.execute("DELETE FROM admin_sessions", [])?;
+        tx.execute("INSERT INTO audit_logs(action,ip) VALUES(?1,?2)",
+            rusqlite::params![format!("管理员账号由【{previous}】修改为【{username}】"), client_ip(&headers, None)])?;
+        tx.commit()?;
+        Ok(true)
+    })();
+    match saved {
+        Ok(true) => Json(serde_json::json!({ "success": true, "message": "账号已更新，请使用新账号重新登录" })),
+        result => {
+            if let Err(error) = result { eprintln!("管理员账号保存失败: {error}"); }
+            Json(serde_json::json!({ "success": false, "message": "账号保存失败，请稍后重试" }))
+        }
+    }
+}
+
+#[derive(Deserialize)]
 struct ChangePasswordReq {
     old_password: String,
     new_password: String,
@@ -3406,7 +3543,7 @@ async fn api_admin_change_password(
     let current_hash: Option<String> = {
         let conn = ctx.db.lock().unwrap();
         conn.query_row(
-            "SELECT password_hash FROM admin WHERE username = 'admin'",
+            "SELECT password_hash FROM admin WHERE id = 1",
             [],
             |r| r.get(0),
         )
@@ -3427,7 +3564,7 @@ async fn api_admin_change_password(
         let mut conn = ctx.db.lock().unwrap();
         let tx = conn.transaction()?;
         let changed = tx.execute(
-            "UPDATE admin SET password_hash = ?1, updated_at = CURRENT_TIMESTAMP WHERE username = 'admin' AND password_hash=?2",
+            "UPDATE admin SET password_hash = ?1, updated_at = CURRENT_TIMESTAMP WHERE id = 1 AND password_hash=?2",
             rusqlite::params![new_hash, current_hash],
         )?;
         if changed != 1 { return Ok(false); }
@@ -3544,7 +3681,7 @@ async fn api_admin_2fa_status(State(ctx): State<AppContext>) -> Json<TwoFactorSt
     let conn = ctx.db.lock().unwrap();
     let enabled: i64 = conn
         .query_row(
-            "SELECT totp_enabled FROM admin WHERE username = 'admin'",
+            "SELECT totp_enabled FROM admin WHERE id = 1",
             [],
             |r| r.get(0),
         )
@@ -3562,7 +3699,7 @@ async fn api_admin_2fa_setup(State(ctx): State<AppContext>) -> Json<serde_json::
     let enabled: i64 = {
         let conn = ctx.db.lock().unwrap();
         conn.query_row(
-            "SELECT totp_enabled FROM admin WHERE username = 'admin'",
+            "SELECT totp_enabled FROM admin WHERE id = 1",
             [],
             |r| r.get(0),
         )
@@ -3584,7 +3721,11 @@ async fn api_admin_2fa_setup(State(ctx): State<AppContext>) -> Json<serde_json::
         }
     };
 
-    let totp = match build_totp(&secret, "admin") {
+    let username = match read_admin_username(&ctx) {
+        Ok(name) => name,
+        Err(_) => return Json(serde_json::json!({ "success": false, "message": "读取管理员账号失败，请稍后重试" })),
+    };
+    let totp = match build_totp(&secret, &username) {
         Ok(t) => t,
         Err(e) => return Json(serde_json::json!({ "success": false, "message": e })),
     };
@@ -3623,7 +3764,11 @@ async fn api_admin_2fa_enable(
     headers: HeaderMap,
     Json(p): Json<Enable2FAReq>,
 ) -> Json<serde_json::Value> {
-    let totp = match build_totp(&p.secret, "admin") {
+    let username = match read_admin_username(&ctx) {
+        Ok(name) => name,
+        Err(_) => return Json(serde_json::json!({ "success": false, "message": "读取管理员账号失败，请稍后重试" })),
+    };
+    let totp = match build_totp(&p.secret, &username) {
         Ok(t) => t,
         Err(e) => return Json(serde_json::json!({ "success": false, "message": e })),
     };
@@ -3641,7 +3786,7 @@ async fn api_admin_2fa_enable(
     {
         let conn = ctx.db.lock().unwrap();
         let _ = conn.execute(
-            "UPDATE admin SET totp_secret = ?1, totp_enabled = 1, updated_at = CURRENT_TIMESTAMP WHERE username = 'admin'",
+            "UPDATE admin SET totp_secret = ?1, totp_enabled = 1, updated_at = CURRENT_TIMESTAMP WHERE id = 1",
             [&p.secret],
         );
         let _ = conn.execute(
@@ -3666,7 +3811,7 @@ async fn api_admin_2fa_disable(
     let hash: Option<String> = {
         let conn = ctx.db.lock().unwrap();
         conn.query_row(
-            "SELECT password_hash FROM admin WHERE username = 'admin'",
+            "SELECT password_hash FROM admin WHERE id = 1",
             [],
             |r| r.get(0),
         )
@@ -3686,7 +3831,7 @@ async fn api_admin_2fa_disable(
     {
         let conn = ctx.db.lock().unwrap();
         let _ = conn.execute(
-            "UPDATE admin SET totp_secret = '', totp_enabled = 0, updated_at = CURRENT_TIMESTAMP WHERE username = 'admin'",
+            "UPDATE admin SET totp_secret = '', totp_enabled = 0, updated_at = CURRENT_TIMESTAMP WHERE id = 1",
             [],
         );
         let _ = conn.execute(
@@ -3789,6 +3934,33 @@ async fn api_admin_save_target(
         Ok(false) => Json(serde_json::json!({ "success": false, "message": "目标不存在" })),
         Err(e) => {
             Json(serde_json::json!({ "success": false, "message": format!("保存失败: {}", e) }))
+        }
+    }
+}
+
+#[derive(Deserialize)]
+struct BatchTargetsReq {
+    ids: Vec<i64>,
+    enabled: bool,
+    #[serde(default)]
+    exclusive: bool,
+}
+
+async fn api_admin_batch_targets(
+    State(ctx): State<AppContext>,
+    headers: HeaderMap,
+    Json(p): Json<BatchTargetsReq>,
+) -> Json<serde_json::Value> {
+    if p.ids.is_empty() || (p.exclusive && !p.enabled) {
+        return Json(serde_json::json!({"success":false,"message":"请选择有效的监控目标"}));
+    }
+    let result = targets::set_enabled(&mut ctx.db.lock().unwrap(), &p.ids, p.enabled, p.exclusive, &client_ip(&headers, None));
+    match result {
+        Ok(changed) => Json(serde_json::json!({"success":true,"changed":changed})),
+        Err(rusqlite::Error::QueryReturnedNoRows) => Json(serde_json::json!({"success":false,"message":"目标不存在，请刷新后重试"})),
+        Err(error) => {
+            eprintln!("批量设置监控目标失败: {error}");
+            Json(serde_json::json!({"success":false,"message":"批量设置失败，请稍后重试"}))
         }
     }
 }

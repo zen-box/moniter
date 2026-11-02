@@ -709,6 +709,57 @@ button,
 .filter-select {
   width: 150px;
 }
+.target-shortcuts-body { padding: 20px; gap: 16px; }
+.target-shortcuts-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; }
+.target-shortcuts-heading h3 { margin: 0 0 5px; font-size: 14px; font-weight: 600; }
+.target-shortcuts-heading p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.7; }
+.target-shortcuts-heading > [data-slot="base"] { flex-shrink: 0; }
+.target-shortcut-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.target-shortcut-actions > button { max-width: 100%; white-space: normal; min-height: 36px; height: auto; padding-block: 9px; }
+.target-region-selection { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding-top: 16px; border-top: 1px solid var(--line); }
+.target-region-selection > [data-slot="base"] { flex: 1 1 250px; max-width: 420px; }
+.target-groups-toolbar { justify-content: space-between; }
+.target-fold-actions { display: flex; gap: 4px; }
+.target-region-group { border-bottom: 1px solid var(--line); }
+.target-region-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.app-shell .target-region-trigger { display: flex; justify-content: flex-start; flex: 1; min-width: 0; height: auto; min-height: 68px; padding: 18px 20px; gap: 10px; border-radius: 0; font-weight: 600; }
+.target-region-trigger > svg { flex-shrink: 0; color: var(--muted); }
+.target-region-trigger > svg:first-child { transition: transform 160ms var(--ease-out); }
+.target-region-trigger > svg.is-open { transform: rotate(90deg); }
+.target-region-trigger > span:not(.target-region-count) { white-space: normal; overflow-wrap: anywhere; }
+.target-region-count { color: var(--muted); background: var(--field-bg); border-radius: 6px; padding: 2px 7px; font-size: 11px; font-weight: 500; }
+.target-region-state { display: flex; align-items: center; flex-shrink: 0; gap: 14px; padding-right: 20px; }
+.target-region-state > span { color: var(--muted); font-size: 12px; }
+.target-region-state > .is-partial { color: var(--warn); }
+.target-carrier-list { margin: 0 20px 12px; padding: 0 14px; border-radius: 10px; background: var(--field-bg); }
+.target-carrier-row { display: grid; grid-template-columns: minmax(140px,1fr) minmax(0,2fr) auto; align-items: center; gap: 16px; padding: 14px 0; }
+.target-carrier-row + .target-carrier-row { border-top: 1px solid var(--line); }
+.target-carrier-identity { display: grid; gap: 4px; min-width: 0; overflow-wrap: anywhere; }
+.target-carrier-identity strong { font-size: 13px; font-weight: 600; }
+.target-carrier-identity > span { font-size: 11px; color: var(--muted); }
+.target-endpoint { color: var(--text); font-size: 12px; overflow-wrap: anywhere; }
+.target-endpoint > span { color: var(--muted); }
+.target-carrier-controls { display: flex; align-items: center; gap: 4px; }
+.target-empty { padding: 40px 20px; color: var(--muted); text-align: center; font-size: 13px; }
+.copy-command-feedback { display: grid; gap: 6px; }
+.copy-command-button { width: 142px; }
+.copy-command-status { min-height: 18px; color: var(--crit); font-size: 12px; line-height: 18px; }
+@media (max-width: 700px) {
+  .target-shortcuts-body { padding: 16px; }
+  .target-shortcuts-heading { flex-wrap: wrap; gap: 10px; }
+  .target-region-selection > [data-slot="base"] { max-width: none; flex-basis: 100%; }
+  .app-shell .target-region-trigger { padding: 16px 12px; gap: 7px; }
+  .target-region-trigger > svg:nth-child(2) { display: none; }
+  .target-region-heading { gap: 6px; }
+  .target-region-state { padding-right: 12px; gap: 8px; }
+  .target-region-state > span { font-size: 11px; }
+  .target-carrier-list { margin-inline: 12px; padding-inline: 12px; }
+  .target-carrier-row { grid-template-columns: minmax(0,1fr) auto; gap: 8px; }
+  .target-carrier-controls { grid-column: 2; grid-row: 1; }
+  .target-endpoint { grid-row: 2; grid-column: 1 / -1; }
+  .target-groups-toolbar > [data-slot="base"]:first-child { max-width: none; }
+}
+@media (prefers-reduced-motion: reduce) { .target-region-trigger > svg:first-child { transition: none; } }
 .table-scroll {
   overflow: auto;
 }

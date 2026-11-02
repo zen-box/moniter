@@ -2,7 +2,7 @@ import {useConfirm} from "./ConfirmProvider";
 import {countryCodes} from "./countries";
 import { useEffect, useMemo, useState } from "react";
 import { Autocomplete, AutocompleteItem, Alert, Button, Input, Modal, ModalBody, ModalContent, ModalFooter, ModalHeader, Select, SelectItem, Switch, Textarea, useDisclosure } from "@heroui/react";
-import { Clipboard } from "lucide-react";
+import { Check, Clipboard } from "lucide-react";
 import { API, requestError, copyText, flag, type ServerNode, type Target } from "../lib";
 
 type Props = { node: ServerNode | null; language: "zh" | "en"; disclosure: ReturnType<typeof useDisclosure>; onSaved: (close: boolean) => void };
@@ -16,6 +16,8 @@ export function NodeEditor({ node, language, disclosure, onSaved }: Props) {
   const [install, setInstall] = useState("");
   const [installToken,setInstallToken]=useState("");
   const [platform,setPlatform]=useState("linux");
+  const [copyState, setCopyState] = useState<"idle" | "copying" | "copied" | "error">("idle");
+  const [copyError, setCopyError] = useState("");
   const [targetSearch,setTargetSearch]=useState("");
   const confirmAction=useConfirm();
   const countries=useMemo(()=>{const names=new Intl.DisplayNames([language==="zh"?"zh-CN":"en"],{type:"region"});return countryCodes.filter(code=>!["XX","PC"].includes(code)).map(code=>({code,name:names.of(code)||code})).sort((a,b)=>a.name.localeCompare(b.name,language));},[language]);
@@ -24,7 +26,8 @@ export function NodeEditor({ node, language, disclosure, onSaved }: Props) {
   const [targetError, setTargetError] = useState("");
   const [targetRetry, setTargetRetry] = useState(0);
   const set = (key: keyof ServerNode, value: unknown) => setForm(current => ({ ...current, [key]: value }));
-  const command = (token: string) => `curl -fsSL -H 'Authorization: Bearer ${token}' '${location.origin}/install.sh' | sudo bash`;
+  const installUrl = (platform: "sh" | "ps1") => `${location.origin}/install.${platform}?origin=${encodeURIComponent(location.origin)}`;
+  const command = (token: string) => `curl -fsSL -H 'Authorization: Bearer ${token}' '${installUrl("sh")}' | sudo bash`;
   useEffect(() => {
     setForm(node ? { ...node, ipv4: node.ipv4_override ?? node.ipv4, ipv6: node.ipv6_override ?? node.ipv6 } : { name: "", tags: "", monitor_enabled: false, route_enabled: false, alert_enabled: false, alert_offline: false, alert_cpu: false, alert_traffic: false });
     setMessage(""); setSuccess(false); setNewId(""); setUsedGb("");
@@ -71,8 +74,15 @@ export function NodeEditor({ node, language, disclosure, onSaved }: Props) {
     if (!result.success) throw new Error(result.message || tr("校准失败", "Calibration failed"));
     setSuccess(true); setMessage(tr("流量已校准", "Traffic calibrated")); onSaved(false);
   });
-  const windowsCommand=`& ([scriptblock]::Create((Invoke-WebRequest -UseBasicParsing -Headers @{Authorization='Bearer ${installToken}'} '${location.origin}/install.ps1').Content))`;
+  const windowsCommand=`& ([scriptblock]::Create((Invoke-WebRequest -UseBasicParsing -Headers @{Authorization='Bearer ${installToken}'} '${installUrl("ps1")}').Content))`;
   const activeCommand=platform==="windows"?windowsCommand:install;
+  useEffect(() => { setCopyState("idle"); setCopyError(""); }, [activeCommand, disclosure.isOpen]);
+  const copyCommand = async () => {
+    if (copyState === "copying") return;
+    setCopyState("copying"); setCopyError("");
+    try { await copyText(activeCommand); setCopyState("copied"); }
+    catch (error) { setCopyError(requestError(error)); setCopyState("error"); }
+  };
   return <Modal isOpen={disclosure.isOpen} onOpenChange={() => { if (!busy) disclosure.onOpenChange(); }} size={node ? "3xl" : "2xl"} scrollBehavior="inside" isDismissable={!busy} isKeyboardDismissDisabled={busy} hideCloseButton={busy}>
     <ModalContent className={`node-modal-content ${node ? "node-modal-edit" : "node-modal-create"}`}>
       <ModalHeader>{node ? tr("编辑节点", "Edit node") : tr("添加节点", "Add node")}</ModalHeader>
@@ -134,7 +144,7 @@ export function NodeEditor({ node, language, disclosure, onSaved }: Props) {
         {install && <section className="form-section"><h4>{tr("安装 Agent", "Install agent")}</h4>
           <Select label={tr("安装平台","Platform")} selectedKeys={[platform]} onSelectionChange={keys=>setPlatform(String([...keys][0]))} disallowEmptySelection><SelectItem key="linux">Linux</SelectItem><SelectItem key="windows">Windows (PowerShell)</SelectItem></Select>
           <Textarea label={platform==="windows"?tr("Windows 安装命令","Windows installation command"):tr("Linux 安装命令", "Linux installation command")} value={activeCommand} minRows={2} isReadOnly />
-          <div className="toolbar-actions"><Button variant="flat" isDisabled={busy} startContent={<Clipboard size={15} />} onPress={() => run(async () => { await copyText(activeCommand); setSuccess(true); setMessage(tr("安装命令已复制", "Installation command copied")); })}>{tr("复制命令", "Copy command")}</Button></div>
+          <div className="copy-command-feedback"><Button className="copy-command-button" variant="flat" isDisabled={busy || copyState === "copying"} startContent={copyState === "copied" ? <Check size={15}/> : <Clipboard size={15}/>} onPress={() => void copyCommand()}>{copyState === "copied" ? tr("已复制", "Copied") : tr("复制命令", "Copy command")}</Button><span className="copy-command-status" role="status" aria-live="polite">{copyError}</span></div>
         </section>}
         {node && <Button className="node-token-reset" size="sm" color="warning" variant="light" onPress={resetToken} isDisabled={busy}>{tr("重置节点令牌", "Reset node token")}</Button>}
         {(node || newId) && <section className="form-section"><h4>{tr("流量校准", "Traffic calibration")}</h4>
